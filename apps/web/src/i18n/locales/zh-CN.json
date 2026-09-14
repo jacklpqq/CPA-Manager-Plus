@@ -983,6 +983,7 @@
     "warmup_inferred_next_at": "推断下次预热时间",
     "warmup_inferred_refresh_recalculate": "刷新额度并重新推断",
     "warmup_inferred_no_reset": "未检测到窗口重置时间，请先点击“刷新额度并重新推断”或切换为固定间隔模式",
+    "warmup_inferred_expired_warning": "窗口已到期，请点击“刷新额度并重新推断”同步最新额度窗口",
     "warmup_interval_label": "预热间隔",
     "warmup_interval_minutes": "分钟",
     "warmup_model_label": "指定模型",

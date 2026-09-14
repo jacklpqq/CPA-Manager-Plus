@@ -985,6 +985,7 @@
     "warmup_inferred_next_at": "Inferred Next Warmup Time",
     "warmup_inferred_refresh_recalculate": "Refresh Quota & Re-infer",
     "warmup_inferred_no_reset": "No window reset time detected. Click 'Refresh Quota & Re-infer' or switch to Fixed Interval mode.",
+    "warmup_inferred_expired_warning": "Quota window has expired. Click 'Refresh Quota & Re-infer' to fetch the latest window.",
     "warmup_interval_label": "Warmup Interval",
     "warmup_interval_minutes": "minutes",
     "warmup_model_label": "Target Model",

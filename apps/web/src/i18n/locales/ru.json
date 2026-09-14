@@ -989,6 +989,7 @@
     "warmup_inferred_next_at": "Следующий прогрев",
     "warmup_inferred_refresh_recalculate": "Обновить квоту и пересчитать",
     "warmup_inferred_no_reset": "Время сброса квоты не обнаружено. Нажмите 'Обновить квоту и пересчитать' или переключитесь на фиксированный интервал",
+    "warmup_inferred_expired_warning": "Окно квоты истекло. Нажмите «Обновить квоту и пересчитать», чтобы синхронизировать окно",
     "warmup_interval_label": "Интервал прогрева",
     "warmup_interval_minutes": "мин.",
     "warmup_model_label": "Модель",

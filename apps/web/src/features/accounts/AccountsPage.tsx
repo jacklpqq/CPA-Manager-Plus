@@ -6532,11 +6532,22 @@ export function AccountsPage() {
   const isManualQuotaRefreshing = (row: AccountRow): boolean =>
     manualQuotaRefreshingKeys.has(getAccountQuotaRefreshKey(row));
 
-  const [warmupTargetRow, setWarmupTargetRow] = useState<AccountRow | null>(null);
+  const [warmupTargetRowKey, setWarmupTargetRowKey] = useState<string | null>(null);
+  const warmupTargetRow = useMemo(
+    () => (warmupTargetRowKey ? (rows.find((r) => r.selectionKey === warmupTargetRowKey) ?? null) : null),
+    [rows, warmupTargetRowKey]
+  );
+
+  const getWarmupQuotaWindows = useCallback(
+    (row: AccountRow) => quotaDisplayWindowsByRowKey.get(row.selectionKey) ?? buildQuotaDisplayWindows(row),
+    [quotaDisplayWindowsByRowKey, buildQuotaDisplayWindows]
+  );
+
   const warmupScheduler = useAccountWarmupScheduler({
     rows,
     refreshAccountQuota,
     quotaDisplayWindowsByRowKey,
+    getQuotaWindows: getWarmupQuotaWindows,
   });
 
   const refreshAccountHistory = useCallback(
@@ -8115,7 +8126,7 @@ export function AccountsPage() {
         className={`${styles.accountIconButton} ${styles.accountIconButtonWarmup} ${
           isWarmupScheduled ? styles.accountIconButtonWarmupActive : ''
         }`}
-        onClick={() => setWarmupTargetRow(row)}
+        onClick={() => setWarmupTargetRowKey(row.selectionKey)}
         disabled={disableControls || row.runtimeOnly}
         loading={isWarmupRunning}
         title={
@@ -9644,7 +9655,7 @@ export function AccountsPage() {
         label: t('accounts.warmup_action'),
         icon: <IconFlame size={15} />,
         onClick: () => {
-          setWarmupTargetRow(selectedRow);
+          setWarmupTargetRowKey(selectedRow.selectionKey);
         },
         disabled: selectedRow.runtimeOnly,
       },
@@ -10168,9 +10179,9 @@ export function AccountsPage() {
       <AccountWarmupModal
         open={warmupTargetRow !== null}
         row={warmupTargetRow}
-        onClose={() => setWarmupTargetRow(null)}
+        onClose={() => setWarmupTargetRowKey(null)}
         quotaWindows={
-          warmupTargetRow ? quotaDisplayWindowsByRowKey.get(warmupTargetRow.selectionKey) : undefined
+          warmupTargetRow ? getWarmupQuotaWindows(warmupTargetRow) : undefined
         }
         scheduler={warmupScheduler}
       />

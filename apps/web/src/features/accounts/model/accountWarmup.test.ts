@@ -295,6 +295,30 @@ describe('accountWarmup model', () => {
       const result = inferNextWarmupTime(row, 10, []);
       expect(result.nextWarmupAtMs).toBeNull();
       expect(result.resetAtMs).toBeNull();
+      expect(result.isFuture).toBe(false);
+    });
+
+    it('marks isFuture: false and falls back to past five_hour window when all reset times have expired', () => {
+      const windows: AccountQuotaDisplayWindow[] = [
+        {
+          key: 'five-hour-win',
+          label: '5小时主窗口',
+          kind: 'five_hour',
+          remainingPercent: 0,
+          usedPercent: 100,
+          resetLabel: '5h',
+          resetAccuracy: 'exact',
+          limitWindowSeconds: 18000,
+          resetAtMs: now - 30000,
+          fromMs: now - 18000000,
+        },
+      ];
+
+      const row = makeMockRow();
+      const result = inferNextWarmupTime(row, 10, windows);
+      expect(result.resetAtMs).toBe(now - 30000);
+      expect(result.nextWarmupAtMs).toBe(now - 30000 + 10000);
+      expect(result.isFuture).toBe(false);
     });
   });
 

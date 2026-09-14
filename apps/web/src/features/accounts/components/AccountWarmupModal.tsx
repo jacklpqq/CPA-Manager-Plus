@@ -37,6 +37,7 @@ import {
   type AccountWarmupConfig,
   type AccountWarmupMode,
   type AccountWarmupRecord,
+  type InferredWarmupTimeResult,
   type WarmupExecutionResult,
 } from '../model/accountWarmup';
 import type { AccountWarmupRuntimeState } from '../hooks/useAccountWarmupScheduler';
@@ -56,7 +57,7 @@ export interface AccountWarmupModalProps {
     getWarmupState: (row: AccountRow) => AccountWarmupRuntimeState;
     updateWarmupConfig: (row: AccountRow, nextConfig: AccountWarmupConfig) => void;
     runImmediateWarmup: (row: AccountRow, customConfig?: AccountWarmupConfig) => Promise<WarmupExecutionResult>;
-    refreshAndReinfer: (row: AccountRow, delaySeconds?: number) => Promise<number | null>;
+    refreshAndReinfer: (row: AccountRow, delaySeconds?: number) => Promise<InferredWarmupTimeResult>;
   };
 }
 
@@ -65,6 +66,7 @@ export interface AccountWarmupModalProps {
  */
 function formatCountdownText(targetMs: number): string {
   const diffSeconds = Math.round((targetMs - Date.now()) / 1000);
+  if (diffSeconds < -60) return '已过期，请刷新额度';
   if (diffSeconds <= 0) return '即将执行';
   if (diffSeconds < 60) return `${diffSeconds} 秒后`;
   const diffMinutes = Math.floor(diffSeconds / 60);
@@ -106,6 +108,8 @@ export function AccountWarmupModal({
   const [isRefreshingInference, setIsRefreshingInference] = useState(false);
   // 最近一次预热执行结果（本地即时展示）
   const [localLastResult, setLocalLastResult] = useState<WarmupExecutionResult | null>(null);
+  // 刷新额度后重新推断的即时结果
+  const [refreshedInferredResult, setRefreshedInferredResult] = useState<InferredWarmupTimeResult | null>(null);
 
   // 表单状态
   const [model, setModel] = useState('');
@@ -130,6 +134,7 @@ export function AccountWarmupModal({
     setIntervalMinutes(state.config.intervalMinutes || DEFAULT_INTERVAL_MINUTES);
     setEnabled(Boolean(state.config.enabled));
     setLocalLastResult(null);
+    setRefreshedInferredResult(null);
 
     // 动态拉取该认证文件支持的模型列表
     let isCancelled = false;
@@ -162,13 +167,16 @@ export function AccountWarmupModal({
     return getWarmupCandidateModels(row.provider, dynamicModels);
   }, [row, dynamicModels]);
 
-  // 推断下次时间计算
-  const inferredTimeInfo = useMemo(() => {
+  // 基础推断下次时间计算
+  const defaultInferred = useMemo(() => {
     if (!row) {
       return { nextWarmupAtMs: null, resetAtMs: null, sourceWindowLabel: null, isFuture: false };
     }
     return inferNextWarmupTime(row, inferredDelaySeconds, quotaWindows);
   }, [row, inferredDelaySeconds, quotaWindows]);
+
+  // 优先采用最新主动刷新推断得出的结果
+  const inferredTimeInfo = refreshedInferredResult ?? defaultInferred;
 
   // 恢复 Prompt 默认值按钮处理函数
   const handleRestoreDefaultPrompt = useCallback(() => {
@@ -221,7 +229,8 @@ export function AccountWarmupModal({
     if (!row || isRefreshingInference) return;
     setIsRefreshingInference(true);
     try {
-      await scheduler.refreshAndReinfer(row, inferredDelaySeconds);
+      const res = await scheduler.refreshAndReinfer(row, inferredDelaySeconds);
+      setRefreshedInferredResult(res);
     } finally {
       setIsRefreshingInference(false);
     }
@@ -510,7 +519,7 @@ export function AccountWarmupModal({
                     </div>
                   </div>
 
-                  {inferredTimeInfo.nextWarmupAtMs ? (
+                  {inferredTimeInfo.nextWarmupAtMs && inferredTimeInfo.isFuture ? (
                     <div className={styles.nextWarmupHighlight}>
                       <div>
                         <span>{t('accounts.warmup_inferred_next_at')}: </span>
@@ -523,7 +532,11 @@ export function AccountWarmupModal({
                   ) : (
                     <div className={styles.warningBox}>
                       <IconTriangleAlert size={14} />
-                      <span>{t('accounts.warmup_inferred_no_reset')}</span>
+                      <span>
+                        {inferredTimeInfo.resetAtMs
+                          ? t('accounts.warmup_inferred_expired_warning')
+                          : t('accounts.warmup_inferred_no_reset')}
+                      </span>
                     </div>
                   )}
 

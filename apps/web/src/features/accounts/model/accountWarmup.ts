@@ -303,10 +303,11 @@ export interface InferredWarmupTimeResult {
  * 自动读取凭据的主额度窗口重置时间（例如 5h 窗口的 resetAtMs），计算并展示推断出的下次预热时间 (resetAtMs + 延迟)
  *
  * 查找优先级：
- * 1. 明确属于 'five_hour' 的主额度窗口 (Codex / Claude 核心重置窗口)
- * 2. 具有最近未来 resetAtMs 的额度窗口
- * 3. row.quota.resetAtMs (主概要中的重置时间)
- * 4. 若所有时间均为过去时间，取最近的一个并标记 isFuture: false，提示用户先刷新额度
+ * 1. 处于未来的 5 小时主额度窗口 (five_hour 且 resetAtMs > now)
+ * 2. 处于未来的其它额度窗口 (resetAtMs > now，取最近的一个)
+ * 3. row.quota.resetAtMs 处于未来 (resetAtMs > now)
+ * 4. 若无未来时间，优先选择 five_hour 窗口（即便处于过去，标记 isFuture: false 供用户参考并提示刷新）
+ * 5. 若无 five_hour 窗口，选择任意有效重置窗口或 row.quota.resetAtMs (标记 isFuture: false)
  */
 export function inferNextWarmupTime(
   row: AccountRow,
@@ -320,13 +321,16 @@ export function inferNextWarmupTime(
   let targetWindowLabel: string | null = null;
 
   if (Array.isArray(quotaWindows) && quotaWindows.length > 0) {
-    // 优先 1：查找 five_hour 类型的窗口且重置时间有效
-    const fiveHourWindow = quotaWindows.find(
-      (w) => w.kind === 'five_hour' && isValidQuotaResetAtMs(w.resetAtMs)
+    // 优先 1：查找未来有效的 five_hour 类型的窗口 (Codex / Claude 核心重置窗口)
+    const futureFiveHourWindow = quotaWindows.find(
+      (w) =>
+        w.kind === 'five_hour' &&
+        isValidQuotaResetAtMs(w.resetAtMs) &&
+        (w.resetAtMs as number) > now
     );
-    if (fiveHourWindow && typeof fiveHourWindow.resetAtMs === 'number') {
-      targetResetAtMs = fiveHourWindow.resetAtMs;
-      targetWindowLabel = fiveHourWindow.label || '5小时窗口';
+    if (futureFiveHourWindow && typeof futureFiveHourWindow.resetAtMs === 'number') {
+      targetResetAtMs = futureFiveHourWindow.resetAtMs;
+      targetWindowLabel = futureFiveHourWindow.label || '5小时窗口';
     } else {
       // 优先 2：寻找距离当前时间最近的未来重置窗口
       const futureWindows = quotaWindows
@@ -340,19 +344,38 @@ export function inferNextWarmupTime(
     }
   }
 
-  // 优先 3：若未从 windows 查到，检查 row.quota.resetAtMs
-  if (targetResetAtMs === null && isValidQuotaResetAtMs(row.quota.resetAtMs)) {
+  // 优先 3：若未从 windows 查到未来窗口，检查 row.quota.resetAtMs 是否处于未来
+  if (
+    targetResetAtMs === null &&
+    isValidQuotaResetAtMs(row.quota.resetAtMs) &&
+    (row.quota.resetAtMs as number) > now
+  ) {
     targetResetAtMs = row.quota.resetAtMs as number;
     targetWindowLabel = row.quota.resetLabel || '额度重置窗口';
   }
 
-  // 若未找到未来重置时间，但存在过去的 resetAtMs（窗口已过但未刷新）
+  // 降级兜底 4：若所有窗口均未在未来（已过期或未刷新），优先查找 five_hour 窗口
   if (targetResetAtMs === null && Array.isArray(quotaWindows) && quotaWindows.length > 0) {
-    const anyValidWindow = quotaWindows.find((w) => isValidQuotaResetAtMs(w.resetAtMs));
-    if (anyValidWindow && typeof anyValidWindow.resetAtMs === 'number') {
-      targetResetAtMs = anyValidWindow.resetAtMs;
-      targetWindowLabel = anyValidWindow.label || '额度窗口';
+    const pastFiveHourWindow = quotaWindows.find(
+      (w) => w.kind === 'five_hour' && isValidQuotaResetAtMs(w.resetAtMs)
+    );
+    if (pastFiveHourWindow && typeof pastFiveHourWindow.resetAtMs === 'number') {
+      targetResetAtMs = pastFiveHourWindow.resetAtMs;
+      targetWindowLabel = pastFiveHourWindow.label || '5小时窗口';
+    } else {
+      // 降级兜底 5：取有效窗口
+      const anyValidWindow = quotaWindows.find((w) => isValidQuotaResetAtMs(w.resetAtMs));
+      if (anyValidWindow && typeof anyValidWindow.resetAtMs === 'number') {
+        targetResetAtMs = anyValidWindow.resetAtMs;
+        targetWindowLabel = anyValidWindow.label || '额度窗口';
+      }
     }
+  }
+
+  // 降级兜底 6：检查 row.quota.resetAtMs（哪怕在过去）
+  if (targetResetAtMs === null && isValidQuotaResetAtMs(row.quota.resetAtMs)) {
+    targetResetAtMs = row.quota.resetAtMs as number;
+    targetWindowLabel = row.quota.resetLabel || '额度重置窗口';
   }
 
   if (targetResetAtMs === null) {

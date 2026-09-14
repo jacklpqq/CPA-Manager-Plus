@@ -133,7 +133,12 @@ describe('AccountWarmupModal', () => {
         durationMs: 120,
         responseSnippet: 'pong response',
       }),
-      refreshAndReinfer: vi.fn().mockResolvedValue(1700003620000),
+      refreshAndReinfer: vi.fn().mockResolvedValue({
+        nextWarmupAtMs: 1700003620000,
+        resetAtMs: 1700003610000,
+        sourceWindowLabel: '5h Window',
+        isFuture: true,
+      }),
     };
   });
 
@@ -188,9 +193,9 @@ describe('AccountWarmupModal', () => {
     });
     expect(textarea.props.value).toBe('custom prompt text');
 
-    // 查找恢复默认值按钮 (title="accounts.warmup.resetPromptDefault")
+    // 查找恢复默认值按钮 (title="accounts.warmup_prompt_restore_default")
     const resetButton = renderer.root.findByProps({
-      title: 'accounts.warmup.resetPromptDefault',
+      title: 'accounts.warmup_prompt_restore_default',
     });
     expect(resetButton).toBeDefined();
 
@@ -221,13 +226,18 @@ describe('AccountWarmupModal', () => {
       await Promise.resolve();
     });
 
-    // 查找“立即预热”按钮 (包含 accounts.warmup.runImmediate 文本)
+    // 查找“立即预热”按钮 (包含 accounts.warmup_now_button 文本)
     const buttons = renderer.root.findAllByType('button');
-    const runButton = buttons.find(
-      (b) =>
-        typeof b.props.children === 'string' &&
-        b.props.children.includes('accounts.warmup.runImmediate')
-    );
+    const runButton = buttons.find((b) => {
+      const children = b.props.children;
+      if (typeof children === 'string') return children.includes('accounts.warmup_now_button');
+      if (Array.isArray(children)) {
+        return children.some(
+          (c) => typeof c === 'string' && c.includes('accounts.warmup_now_button')
+        );
+      }
+      return false;
+    });
     expect(runButton).toBeDefined();
 
     await act(async () => {
@@ -261,13 +271,22 @@ describe('AccountWarmupModal', () => {
       await Promise.resolve();
     });
 
-    // 查找“刷新额度并重新推断”按钮
+    // 查找“刷新额度并重新推断”按钮 (包含 accounts.warmup_inferred_refresh_recalculate 文本)
     const buttons = renderer.root.findAllByType('button');
-    const reinferButton = buttons.find(
-      (b) =>
-        typeof b.props.children === 'string' &&
-        b.props.children.includes('accounts.warmup.refreshAndReinfer')
-    );
+    const reinferButton = buttons.find((b) => {
+      const children = b.props.children;
+      if (typeof children === 'string') {
+        return children.includes('accounts.warmup_inferred_refresh_recalculate');
+      }
+      if (Array.isArray(children)) {
+        return children.some(
+          (c) =>
+            typeof c === 'string' &&
+            c.includes('accounts.warmup_inferred_refresh_recalculate')
+        );
+      }
+      return false;
+    });
     expect(reinferButton).toBeDefined();
 
     await act(async () => {

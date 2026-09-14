@@ -212,13 +212,73 @@ describe('useAccountWarmupScheduler', () => {
       quotaDisplayWindowsByRowKey: quotaMap,
     });
 
-    let nextTime: number | null = null;
+    let reinferred: accountWarmupModel.InferredWarmupTimeResult | null = null;
     await act(async () => {
-      nextTime = await latest!.refreshAndReinfer(row, 10);
+      reinferred = await latest!.refreshAndReinfer(row, 10);
       await Promise.resolve();
     });
 
     expect(refreshAccountQuota).toHaveBeenCalledWith(row);
-    expect(nextTime).toBe(1700007200000 + 10000);
+    expect(reinferred?.nextWarmupAtMs).toBe(1700007200000 + 10000);
+    expect(reinferred?.isFuture).toBe(true);
+  });
+
+  it('hydrates scheduled state from localStorage for existing accounts', async () => {
+    const row = makeMockRow({ selectionKey: 'hydrated-acc' });
+    accountWarmupModel.saveAccountWarmupConfig('hydrated-acc', {
+      model: 'gpt-5-codex',
+      prompt: 'ping',
+      maxTokens: 16,
+      mode: 'interval',
+      inferredDelaySeconds: 10,
+      intervalMinutes: 30,
+      enabled: true,
+    });
+
+    await mount({
+      rows: [row],
+      refreshAccountQuota,
+    });
+
+    expect(latest!.isWarmupScheduled('hydrated-acc')).toBe(true);
+    const state = latest!.getWarmupState(row);
+    expect(state.config.enabled).toBe(true);
+  });
+
+  it('triggers scheduled warmup on timer tick and prevents infinite past-time loops', async () => {
+    const row = makeMockRow({ selectionKey: 'timer-acc' });
+    const inferSpy = vi.spyOn(accountWarmupModel, 'executeWarmupInference').mockResolvedValue({
+      success: true,
+      statusCode: 200,
+      durationMs: 100,
+      responseSnippet: 'scheduled pong',
+    });
+
+    await mount({
+      rows: [row],
+      refreshAccountQuota,
+    });
+
+    // 启用基于重置时间的预热，设置下次时间为当前时刻之前（触发执行）
+    await act(async () => {
+      latest!.updateWarmupConfig(row, {
+        model: 'gpt-5-codex',
+        prompt: 'ping',
+        maxTokens: 16,
+        mode: 'interval',
+        inferredDelaySeconds: 10,
+        intervalMinutes: 60,
+        enabled: true,
+      });
+      await Promise.resolve();
+    });
+
+    // 快进 5 秒调度器时钟
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+      await Promise.resolve();
+    });
+
+    expect(latest!.isWarmupScheduled('timer-acc')).toBe(true);
   });
 });
