@@ -10183,6 +10183,7 @@ export function AccountsPage() {
         quotaWindows={
           warmupTargetRow ? getWarmupQuotaWindows(warmupTargetRow) : undefined
         }
+        requestScope={authFilesRequestScope}
         scheduler={warmupScheduler}
       />
     </div>

@@ -10,6 +10,7 @@ import { useNotificationStore } from '@/stores';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
 import type { AccountRow } from '../model/accountRows';
 import {
+  calculateTargetResetWarmupTime,
   executeWarmupInference,
   inferNextWarmupTime,
   loadAccountWarmupConfig,
@@ -20,6 +21,7 @@ import {
   type AccountWarmupRecord,
   type InferredWarmupTimeResult,
   type WarmupExecutionResult,
+  type WarmupTriggerSource,
 } from '../model/accountWarmup';
 
 /** 凭据预热运行时状态 */
@@ -133,6 +135,13 @@ export function useAccountWarmupScheduler({
           ) {
             nextWarmupAtMs = inferred.nextWarmupAtMs;
           }
+        } else if (config.mode === 'target_reset') {
+          // 目标重置时间模式：依据期望每日重置时间（如 09:20）提前 5H 在 04:20 预热
+          const targetRes = calculateTargetResetWarmupTime(
+            config.targetResetTime,
+            config.targetLeadHours
+          );
+          nextWarmupAtMs = targetRes.nextWarmupAtMs;
         } else {
           nextWarmupAtMs = Date.now() + config.intervalMinutes * 60 * 1000;
         }
@@ -165,6 +174,12 @@ export function useAccountWarmupScheduler({
           const windows = resolveQuotaWindows(row);
           const inferred = inferNextWarmupTime(row, nextConfig.inferredDelaySeconds, windows);
           nextWarmupAtMs = inferred.isFuture ? inferred.nextWarmupAtMs : null;
+        } else if (nextConfig.mode === 'target_reset') {
+          const targetRes = calculateTargetResetWarmupTime(
+            nextConfig.targetResetTime,
+            nextConfig.targetLeadHours
+          );
+          nextWarmupAtMs = targetRes.nextWarmupAtMs;
         } else {
           nextWarmupAtMs = Date.now() + nextConfig.intervalMinutes * 60 * 1000;
         }
@@ -423,9 +438,9 @@ export function useAccountWarmupScheduler({
         const nextAt = itemState.nextWarmupAtMs;
         // 到达或超过指定预热时间
         if (typeof nextAt === 'number' && nextAt > 0 && now >= nextAt) {
-          // 防死循环保护：若推断模式下最近一次记录时间戳晚于或等于该预热时间点，则跳过
+          // 防死循环保护：若推断/目标重置模式下最近一次记录时间戳晚于或等于该预热时间点，则跳过
           if (
-            itemState.config.mode === 'inferred' &&
+            (itemState.config.mode === 'inferred' || itemState.config.mode === 'target_reset') &&
             itemState.lastRecord &&
             itemState.lastRecord.timestamp >= nextAt
           ) {
@@ -449,7 +464,7 @@ export function useAccountWarmupScheduler({
           void (async () => {
             try {
               const res = await executeWarmupInference(row, itemState.config);
-              const triggerMode = itemState.config.mode === 'inferred' ? 'inferred' : 'interval';
+              const triggerMode: WarmupTriggerSource = itemState.config.mode;
               const record: AccountWarmupRecord = {
                 timestamp: Date.now(),
                 statusCode: res.statusCode,
@@ -484,6 +499,14 @@ export function useAccountWarmupScheduler({
                   inferred.nextWarmupAtMs && inferred.nextWarmupAtMs > Date.now()
                     ? inferred.nextWarmupAtMs
                     : null;
+              } else if (itemState.config.mode === 'target_reset') {
+                // 目标重置时间模式：重新计算下一次排期（以当前时间之后为基准，自动排到明天的同一预热时刻）
+                const targetRes = calculateTargetResetWarmupTime(
+                  itemState.config.targetResetTime,
+                  itemState.config.targetLeadHours,
+                  Date.now() + 1000
+                );
+                nextWarmupAtMs = targetRes.nextWarmupAtMs;
               } else {
                 nextWarmupAtMs = Date.now() + itemState.config.intervalMinutes * 60 * 1000;
               }

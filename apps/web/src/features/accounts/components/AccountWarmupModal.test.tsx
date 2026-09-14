@@ -76,12 +76,25 @@ vi.mock('@/components/ui/AutocompleteInput', () => ({
 }));
 
 // 模拟远程模型 API
+export const mockGetModelsForAuthFile = vi.fn().mockResolvedValue([
+  { id: 'gpt-5.5', name: 'GPT-5.5' },
+  { id: 'pqq/gpt-5.5', name: 'PQQ GPT-5.5' },
+  { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+]);
+
+vi.mock('@/services/api', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    authFilesApi: {
+      getModelsForAuthFile: mockGetModelsForAuthFile,
+    },
+  };
+});
+
 vi.mock('@/services/api/authFiles', () => ({
   authFilesApi: {
-    getModelsForAuthFile: vi.fn().mockResolvedValue([
-      { id: 'gpt-5-codex', name: 'GPT-5 Codex' },
-      { id: 'gpt-5', name: 'GPT-5 Standard' },
-    ]),
+    getModelsForAuthFile: mockGetModelsForAuthFile,
   },
 }));
 
@@ -369,5 +382,125 @@ describe('AccountWarmupModal', () => {
 
     // 验证 refreshAndReinfer 被调用
     expect(mockScheduler.refreshAndReinfer).toHaveBeenCalledWith(row, 10);
+  });
+
+  it('fetches dynamic models using selector and requestScope, and auto selects first dynamic model', async () => {
+    mockGetModelsForAuthFile.mockClear();
+    const row = makeMockRow({
+      raw: {
+        name: 'custom-file.json',
+        id: 'runtime-id-123',
+        type: 'codex',
+      },
+    });
+
+    const mockRequestScope = { connectionKey: 'conn-1' };
+    let renderer!: ReactTestRenderer;
+
+    await act(async () => {
+      renderer = create(
+        <AccountWarmupModal
+          open={true}
+          row={row}
+          onClose={onClose}
+          requestScope={mockRequestScope}
+          scheduler={mockScheduler}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    // 验证以 runtimeId 或 name 调用了真实 API 并传递了 requestScope
+    expect(mockGetModelsForAuthFile).toHaveBeenCalledWith('runtime-id-123', mockRequestScope);
+
+    // 验证 AutocompleteInput 被自动设置为动态列表首项 'gpt-5.5'
+    const input = renderer.root.findByProps({ 'data-testid': 'mock-autocomplete-input' });
+    expect(input.props.value).toBe('gpt-5.5');
+  });
+
+  it('allows manually refreshing dynamic models by clicking refresh button', async () => {
+    mockGetModelsForAuthFile.mockClear();
+    const row = makeMockRow();
+    let renderer!: ReactTestRenderer;
+
+    await act(async () => {
+      renderer = create(
+        <AccountWarmupModal
+          open={true}
+          row={row}
+          onClose={onClose}
+          scheduler={mockScheduler}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    expect(mockGetModelsForAuthFile).toHaveBeenCalledTimes(1);
+
+    // 找到刷新模型列表按钮 (title="accounts.warmup_model_refresh")
+    const refreshBtn = renderer.root.findByProps({ title: 'accounts.warmup_model_refresh' });
+    expect(refreshBtn).toBeDefined();
+
+    await act(async () => {
+      refreshBtn.props.onClick();
+      await Promise.resolve();
+    });
+
+    // 再次触发加载
+    expect(mockGetModelsForAuthFile).toHaveBeenCalledTimes(2);
+  });
+
+  it('supports saving target_reset mode with custom reset time and lead hours', async () => {
+    const row = makeMockRow();
+    let renderer!: ReactTestRenderer;
+
+    // 模拟凭据已配置为 target_reset 模式
+    vi.mocked(mockScheduler.getWarmupState).mockReturnValue({
+      config: {
+        model: 'gpt-5.5',
+        prompt: DEFAULT_WARMUP_PROMPT,
+        maxTokens: 16,
+        mode: 'target_reset',
+        inferredDelaySeconds: 10,
+        intervalMinutes: 60,
+        enabled: true,
+        targetResetTime: '09:20',
+        targetLeadHours: 5,
+      },
+      nextWarmupAtMs: 1700000000000,
+      lastRecord: null,
+      isRunning: false,
+    });
+
+    await act(async () => {
+      renderer = create(
+        <AccountWarmupModal
+          open={true}
+          row={row}
+          onClose={onClose}
+          scheduler={mockScheduler}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    // 点击保存按钮
+    const saveBtn = findButtonByText(renderer.root, 'common.save');
+    expect(saveBtn).toBeDefined();
+
+    await act(async () => {
+      saveBtn!.props.onClick?.();
+      await Promise.resolve();
+    });
+
+    expect(mockScheduler.updateWarmupConfig).toHaveBeenCalledWith(
+      row,
+      expect.objectContaining({
+        mode: 'target_reset',
+        targetResetTime: '09:20',
+        targetLeadHours: 5,
+      })
+    );
+    expect(onClose).toHaveBeenCalled();
   });
 });

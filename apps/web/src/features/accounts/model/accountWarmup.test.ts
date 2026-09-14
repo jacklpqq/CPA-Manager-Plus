@@ -5,11 +5,16 @@ import type { AccountRow } from './accountRows';
 import {
   DEFAULT_INFERRED_DELAY_SECONDS,
   DEFAULT_INTERVAL_MINUTES,
+  DEFAULT_TARGET_LEAD_HOURS,
+  DEFAULT_TARGET_RESET_TIME,
   DEFAULT_WARMUP_MAX_TOKENS,
   DEFAULT_WARMUP_PROMPT,
   buildWarmupPayload,
+  calculateTargetResetWarmupTime,
   executeWarmupInference,
+  extractExcludedModelsFromRow,
   extractModelResponseContent,
+  extractPrefixFromRow,
   getDefaultWarmupEndpoint,
   getDefaultWarmupModel,
   getWarmupCandidateModels,
@@ -17,6 +22,7 @@ import {
   loadAccountWarmupConfig,
   loadWarmupHistory,
   loadWarmupPrompt,
+  parseTimeToMinutes,
   saveAccountWarmupConfig,
   saveWarmupPrompt,
   saveWarmupRecord,
@@ -111,9 +117,11 @@ describe('accountWarmup model', () => {
       expect(DEFAULT_WARMUP_MAX_TOKENS).toBe(16);
       expect(DEFAULT_INFERRED_DELAY_SECONDS).toBe(10);
       expect(DEFAULT_INTERVAL_MINUTES).toBe(60);
+      expect(DEFAULT_TARGET_RESET_TIME).toBe('09:20');
+      expect(DEFAULT_TARGET_LEAD_HOURS).toBe(5);
     });
 
-    it('returns sensible default models by provider', () => {
+    it('returns sensible default models by provider when dynamic list is empty', () => {
       expect(getDefaultWarmupModel('codex')).toBe('gpt-5-codex');
       expect(getDefaultWarmupModel('claude')).toBe('claude-3-7-sonnet-20250219');
       expect(getDefaultWarmupModel('gemini')).toBe('gemini-2.5-pro');
@@ -123,19 +131,46 @@ describe('accountWarmup model', () => {
     });
 
     it('prefers dynamic models if available for default selection', () => {
-      const dynamic = [{ id: 'custom-fine-tuned' }, { id: 'gpt-4o' }];
-      expect(getDefaultWarmupModel('codex', dynamic)).toBe('custom-fine-tuned');
+      const dynamic = [{ id: 'gpt-5.5' }, { id: 'pqq/gpt-5.5' }];
+      expect(getDefaultWarmupModel('codex', dynamic)).toBe('gpt-5.5');
     });
 
-    it('combines dynamic models with provider presets without duplicates', () => {
-      const dynamic = [{ id: 'gpt-5-codex' }, { id: 'custom-model' }];
+    it('uses dynamic models exclusively when available, preventing hardcoded clutter', () => {
+      const dynamic = [{ id: 'gpt-5.5' }, { id: 'gpt-6-astra' }];
       const candidates = getWarmupCandidateModels('codex', dynamic);
-      expect(candidates[0]).toBe('gpt-5-codex');
-      expect(candidates[1]).toBe('custom-model');
-      expect(candidates).toContain('gpt-5.3-codex-spark');
-      // No duplicates
-      const lower = candidates.map((c) => c.toLowerCase());
-      expect(new Set(lower).size).toBe(candidates.length);
+      expect(candidates).toEqual(['gpt-5.5', 'gpt-6-astra']);
+      expect(candidates).not.toContain('gpt-5-codex'); // 没有注入写死模型
+    });
+
+    it('supports credential prefix and complements prefixed model options', () => {
+      const dynamic = [{ id: 'gpt-5.5' }, { id: 'gpt-6-astra' }];
+      const candidates = getWarmupCandidateModels('codex', dynamic, { prefix: 'pqq' });
+      expect(candidates).toContain('gpt-5.5');
+      expect(candidates).toContain('pqq/gpt-5.5');
+      expect(candidates).toContain('gpt-6-astra');
+      expect(candidates).toContain('pqq/gpt-6-astra');
+    });
+
+    it('filters out excluded models configured on credential', () => {
+      const dynamic = [{ id: 'gpt-5.5' }, { id: 'gpt-6-astra' }, { id: 'disabled-model' }];
+      const candidates = getWarmupCandidateModels('codex', dynamic, {
+        excludedModels: ['disabled-model'],
+      });
+      expect(candidates).toContain('gpt-5.5');
+      expect(candidates).toContain('gpt-6-astra');
+      expect(candidates).not.toContain('disabled-model');
+    });
+
+    it('extracts prefix and excluded models directly from row', () => {
+      const row = makeMockRow({
+        raw: {
+          name: 'test.json',
+          prefix: 'team',
+          'excluded-models': ['o1-preview'],
+        },
+      });
+      expect(extractPrefixFromRow(row)).toBe('team');
+      expect(extractExcludedModelsFromRow(row)).toEqual(['o1-preview']);
     });
   });
 
@@ -531,4 +566,61 @@ describe('accountWarmup model', () => {
       expect(outcome.errorMessage).toContain('Too Many Requests');
     });
   });
+
+  describe('calculateTargetResetWarmupTime and parseTimeToMinutes', () => {
+    it('parses valid and invalid time strings properly', () => {
+      expect(parseTimeToMinutes('09:20')).toEqual({ hours: 9, minutes: 20, totalMinutes: 560 });
+      expect(parseTimeToMinutes('00:00')).toEqual({ hours: 0, minutes: 0, totalMinutes: 0 });
+      expect(parseTimeToMinutes('23:59')).toEqual({ hours: 23, minutes: 59, totalMinutes: 1439 });
+      expect(parseTimeToMinutes('invalid')).toEqual({ hours: 9, minutes: 20, totalMinutes: 560 });
+    });
+
+    it('calculates 5h lead warmup time accurately for daily 09:20 reset', () => {
+      // 假设当前时间为 2026-09-14 01:00 (04:20 预热尚未到达)
+      const refTime = new Date(2026, 8, 14, 1, 0, 0, 0).getTime();
+      const result = calculateTargetResetWarmupTime('09:20', 5, refTime);
+
+      expect(result.warmupTimeStr).toBe('04:20');
+      expect(result.targetResetTimeStr).toBe('09:20');
+      expect(result.leadHours).toBe(5);
+
+      // 下次预热时间应在当天的 04:20
+      const nextDate = new Date(result.nextWarmupAtMs);
+      expect(nextDate.getFullYear()).toBe(2026);
+      expect(nextDate.getMonth()).toBe(8);
+      expect(nextDate.getDate()).toBe(14);
+      expect(nextDate.getHours()).toBe(4);
+      expect(nextDate.getMinutes()).toBe(20);
+
+      // 预期重置时间应在当天的 09:20 (相隔恰好 5 小时)
+      expect(result.expectedResetAtMs - result.nextWarmupAtMs).toBe(5 * 3600 * 1000);
+    });
+
+    it('schedules for next day if todays warmup time has already passed', () => {
+      // 假设当前时间为 2026-09-14 10:00 (今天的 04:20 已经过去了)
+      const refTime = new Date(2026, 8, 14, 10, 0, 0, 0).getTime();
+      const result = calculateTargetResetWarmupTime('09:20', 5, refTime);
+
+      expect(result.warmupTimeStr).toBe('04:20');
+      // 下次预热应安排在明天的 04:20
+      const nextDate = new Date(result.nextWarmupAtMs);
+      expect(nextDate.getDate()).toBe(15);
+      expect(nextDate.getHours()).toBe(4);
+      expect(nextDate.getMinutes()).toBe(20);
+    });
+
+    it('handles midnight wrap-around when lead hours exceed target hours', () => {
+      // 期望重置时间 02:00，提前 5 小时 -> 前一日 21:00
+      // 设当前时间为 18:00 (当天的 21:00 尚未到达)
+      const refTime = new Date(2026, 8, 14, 18, 0, 0, 0).getTime();
+      const result = calculateTargetResetWarmupTime('02:00', 5, refTime);
+
+      expect(result.warmupTimeStr).toBe('21:00');
+      const nextDate = new Date(result.nextWarmupAtMs);
+      expect(nextDate.getHours()).toBe(21);
+      expect(nextDate.getMinutes()).toBe(0);
+      expect(result.expectedResetAtMs - result.nextWarmupAtMs).toBe(5 * 3600 * 1000);
+    });
+  });
 });
+

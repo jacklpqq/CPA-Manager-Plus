@@ -6,6 +6,9 @@
 import { apiCallApi, getApiCallErrorMessage, type ApiCallResult } from '@/services/api/apiCall';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
+import { matchesAccountModelRule } from './accountModelRules';
+import { normalizeExcludedModels, parseExcludedModelsText } from '@/features/authFiles/constants';
+import type { AuthFileItem } from '@/types';
 import type { AccountQuotaDisplayWindow } from './accountQuotaDisplayWindows';
 import type { AccountRow } from './accountRows';
 
@@ -21,6 +24,12 @@ export const DEFAULT_INFERRED_DELAY_SECONDS = 10;
 /** 默认固定间隔分钟数 (1小时) */
 export const DEFAULT_INTERVAL_MINUTES = 60;
 
+/** 默认期望窗口重置时间 (每日 09:20，以便在早间工作高峰拥有全新额度) */
+export const DEFAULT_TARGET_RESET_TIME = '09:20';
+
+/** 默认提前预热时长 (小时，默认 5 小时对应 Codex / Claude 等常见 5h 滚动额度窗口) */
+export const DEFAULT_TARGET_LEAD_HOURS = 5;
+
 /** localStorage 中保存全局默认 Prompt 的键名 */
 export const WARMUP_PROMPT_STORAGE_KEY = 'cpamp_account_warmup_prompt_default';
 
@@ -33,9 +42,10 @@ export const WARMUP_HISTORY_STORAGE_KEY_PREFIX = 'cpamp_account_warmup_history_'
 /**
  * 预热调度模式
  * - inferred: 根据主额度窗口（如 5h 窗口）重置时间自动推断预热时间 (resetAtMs + 延迟)
+ * - target_reset: 依据用户指定的每日窗口重置时间点（如 09:20），根据凭证刷新时间自动提前指定小时数（如 5H）预热
  * - interval: 按照固定时间间隔周期性触发预热 (每隔 N 分钟)
  */
-export type AccountWarmupMode = 'inferred' | 'interval';
+export type AccountWarmupMode = 'inferred' | 'target_reset' | 'interval';
 
 /**
  * 单个凭据的预热配置
@@ -47,7 +57,7 @@ export interface AccountWarmupConfig {
   prompt: string;
   /** 最大 Token 数 (max_tokens)，默认 16 */
   maxTokens: number;
-  /** 调度模式：推断时间 or 固定间隔 */
+  /** 调度模式：推断时间 or 目标重置时间 or 固定间隔 */
   mode: AccountWarmupMode;
   /** 推断模式下，额度重置后的延迟执行秒数（默认 10 秒） */
   inferredDelaySeconds: number;
@@ -57,7 +67,14 @@ export interface AccountWarmupConfig {
   enabled: boolean;
   /** 可选的自定义请求 Endpoint URL */
   customEndpoint?: string;
+  /** 目标重置时间模式下的每日期望重置时间 (格式 "HH:mm"，例如 "09:20") */
+  targetResetTime?: string;
+  /** 目标重置时间模式下的提前预热时长 (小时，例如提前 5 小时预热)，默认 5 */
+  targetLeadHours?: number;
 }
+
+/** 预热触发来源类型 */
+export type WarmupTriggerSource = 'manual' | 'inferred' | 'target_reset' | 'interval';
 
 /**
  * 预热执行单次记录
@@ -77,8 +94,8 @@ export interface AccountWarmupRecord {
   errorMessage?: string;
   /** 执行请求时使用的模型 */
   model: string;
-  /** 调度模式：'manual' (手动立即预热) | 'inferred' (定时推断) | 'interval' (定时固定间隔) */
-  triggerSource: 'manual' | 'inferred' | 'interval';
+  /** 调度模式：'manual' (手动立即预热) | 'inferred' (定时推断) | 'target_reset' (目标重置时间提前预热) | 'interval' (定时固定间隔) */
+  triggerSource: WarmupTriggerSource;
 }
 
 /**
@@ -114,49 +131,130 @@ export const DEFAULT_WARMUP_MODELS_BY_PROVIDER: Record<string, string[]> = {
 };
 
 /**
+ * 从凭据行或 AuthFileItem 提取排除模型列表 (excluded-models)
+ */
+export function extractExcludedModelsFromRow(rowOrFile?: AccountRow | AuthFileItem | null): string[] {
+  if (!rowOrFile) return [];
+  const raw = ('raw' in rowOrFile && rowOrFile.raw) ? rowOrFile.raw : (rowOrFile as AuthFileItem);
+  const excluded = raw['excluded-models'] ?? raw.excludedModels ?? raw.excluded_models;
+  if (Array.isArray(excluded)) {
+    return normalizeExcludedModels(excluded.map(String));
+  }
+  if (typeof excluded === 'string') {
+    return parseExcludedModelsText(excluded);
+  }
+  return [];
+}
+
+/**
+ * 从凭据行或 AuthFileItem 提取前缀 (prefix)
+ */
+export function extractPrefixFromRow(rowOrFile?: AccountRow | AuthFileItem | null): string {
+  if (!rowOrFile) return '';
+  const raw = ('raw' in rowOrFile && rowOrFile.raw) ? rowOrFile.raw : (rowOrFile as AuthFileItem);
+  const prefix = raw.prefix;
+  return typeof prefix === 'string' ? prefix.trim().replace(/\/+$/g, '') : '';
+}
+
+/**
+ * 候选模型筛选与解析配置项
+ */
+export interface WarmupCandidateModelsOptions {
+  /** 可选的前缀字符串 (如 "pqq") */
+  prefix?: string;
+  /** 可选的排除模型模式数组 (如 ["o1-preview", "gpt-4*"]) */
+  excludedModels?: string[];
+  /** 目标凭据行 (自动解析 prefix 与 excluded-models) */
+  row?: AccountRow | null;
+}
+
+/**
  * 获取指定 Provider 的默认推荐首选模型
+ * 优先采用动态可用模型列表的第一个，其次按 Provider 推荐，最后兜底
  */
 export function getDefaultWarmupModel(
   provider: string,
-  dynamicModels?: Array<{ id: string; name?: string }>
+  dynamicModels?: Array<{ id: string; name?: string }>,
+  options?: WarmupCandidateModelsOptions
 ): string {
-  if (dynamicModels && dynamicModels.length > 0) {
-    return dynamicModels[0].id;
-  }
-  const normalized = String(provider || '').trim().toLowerCase();
-  const presets = DEFAULT_WARMUP_MODELS_BY_PROVIDER[normalized];
-  if (presets && presets.length > 0) {
-    return presets[0];
+  const candidates = getWarmupCandidateModels(provider, dynamicModels, options);
+  if (candidates.length > 0) {
+    return candidates[0];
   }
   return 'gpt-4o-mini';
 }
 
 /**
- * 获取凭据可用的候选模型列表（合并动态获取与内置常用预设，去重）
+ * 获取凭据可用的候选模型列表
+ *
+ * 核心设计（代码即文档）：
+ * 1. 优先采用从凭证动态获取的真实模型列表 (dynamicModels)
+ * 2. 结合凭证的 prefix 配置，若列表中尚未包含带前缀版本，自动补充带前缀的真实可用模型供用户选择
+ * 3. 结合凭据的 excluded-models 排除规则，过滤已被禁用的模型，仅将真正可用的模型列入候选
+ * 4. 只要成功获取到了动态可用模型，候选列表完全由动态获取到的真实模型组成，杜绝硬编码写死模型干扰
+ * 5. 仅当动态模型列表彻底为空时（如离线或后端不支持），才采用 Provider 内置推荐模型作为 fallback 兜底
  */
 export function getWarmupCandidateModels(
   provider: string,
-  dynamicModels?: Array<{ id: string; name?: string }>
+  dynamicModels?: Array<{ id: string; name?: string }>,
+  options?: WarmupCandidateModelsOptions
 ): string[] {
   const result: string[] = [];
   const seen = new Set<string>();
 
-  // 优先添加动态获取到的凭证专属模型
-  if (Array.isArray(dynamicModels)) {
+  // 1. 提取前缀
+  let prefix = options?.prefix;
+  if (!prefix && options?.row) {
+    prefix = extractPrefixFromRow(options.row);
+  }
+  const cleanPrefix = typeof prefix === 'string' ? prefix.trim().replace(/\/+$/g, '') : '';
+
+  // 2. 提取排除模型规则
+  let excludedRules = options?.excludedModels;
+  if (!excludedRules && options?.row) {
+    excludedRules = extractExcludedModelsFromRow(options.row);
+  }
+  const cleanExcludedRules = Array.isArray(excludedRules) ? excludedRules : [];
+
+  // 判断模型是否匹配排除规则
+  const isModelExcluded = (modelId: string): boolean => {
+    if (cleanExcludedRules.length === 0) return false;
+    return cleanExcludedRules.some((rule) => matchesAccountModelRule(modelId, rule));
+  };
+
+  // 3. 处理动态获取到的凭证专属模型列表
+  if (Array.isArray(dynamicModels) && dynamicModels.length > 0) {
     for (const item of dynamicModels) {
       const id = String(item.id || '').trim();
-      if (id && !seen.has(id.toLowerCase())) {
+      if (!id) continue;
+
+      // 原始模型 ID (未被排除则加入)
+      if (!isModelExcluded(id) && !seen.has(id.toLowerCase())) {
         seen.add(id.toLowerCase());
         result.push(id);
+      }
+
+      // 若配置了前缀，且该 ID 尚未带有此前缀，自动生成带前缀版本（如 pqq/gpt-5.5）
+      if (cleanPrefix) {
+        const prefixedId = id.startsWith(`${cleanPrefix}/`) ? id : `${cleanPrefix}/${id}`;
+        if (!isModelExcluded(prefixedId) && !seen.has(prefixedId.toLowerCase())) {
+          seen.add(prefixedId.toLowerCase());
+          result.push(prefixedId);
+        }
       }
     }
   }
 
-  // 补充 Provider 内置推荐模型
+  // 4. 若成功提取到动态模型，直接返回真实可用列表！不再追加写死的假模型
+  if (result.length > 0) {
+    return result;
+  }
+
+  // 5. 兜底回退：仅当动态列表彻底为空时，补充 Provider 内置推荐模型
   const normalized = String(provider || '').trim().toLowerCase();
   const presets = DEFAULT_WARMUP_MODELS_BY_PROVIDER[normalized] || DEFAULT_WARMUP_MODELS_BY_PROVIDER.openai;
   for (const preset of presets) {
-    if (!seen.has(preset.toLowerCase())) {
+    if (!isModelExcluded(preset) && !seen.has(preset.toLowerCase())) {
       seen.add(preset.toLowerCase());
       result.push(preset);
     }
@@ -399,6 +497,102 @@ export function inferNextWarmupTime(
 }
 
 /**
+ * 目标重置时间计算返回对象
+ */
+export interface TargetResetWarmupTimeResult {
+  /** 下次预热时间点时间戳 (毫秒) */
+  nextWarmupAtMs: number;
+  /** 预期的额度窗口重置时间点时间戳 (毫秒) */
+  expectedResetAtMs: number;
+  /** 每日实际预热时刻字符串，如 "04:20" */
+  warmupTimeStr: string;
+  /** 每日期望重置时刻字符串，如 "09:20" */
+  targetResetTimeStr: string;
+  /** 提前预热的小时数 */
+  leadHours: number;
+}
+
+/**
+ * 解析 "HH:mm" 时间字符串为当天的分钟数 (0 - 1439)
+ */
+export function parseTimeToMinutes(timeStr: string): { hours: number; minutes: number; totalMinutes: number } {
+  const match = /^(\d{1,2}):(\d{1,2})$/.exec(String(timeStr || '').trim());
+  if (!match) {
+    return { hours: 9, minutes: 20, totalMinutes: 9 * 60 + 20 };
+  }
+  let hours = parseInt(match[1], 10);
+  let minutes = parseInt(match[2], 10);
+  if (isNaN(hours) || hours < 0) hours = 0;
+  if (hours > 23) hours = 23;
+  if (isNaN(minutes) || minutes < 0) minutes = 0;
+  if (minutes > 59) minutes = 59;
+  return { hours, minutes, totalMinutes: hours * 60 + minutes };
+}
+
+/**
+ * 依据期望的每日重置时间与提前时长（默认提前 5 小时），计算下一次预热时间与预期重置时间
+ *
+ * 核心逻辑（代码即文档）：
+ * 1. 用户输入期望每天窗口重置的时间点（如 09:20）。
+ * 2. 凭借凭证滚动窗口期（如 Codex 5h 滚动额度窗口），提前 leadHours（默认 5）小时触发预热。
+ * 3. 预热时刻 = 09:20 - 5H = 04:20。若跨天（如 02:00 - 5H = 前日 21:00），自动通过模 1440 进行 24 小时回卷。
+ * 4. 结合当前基准时间戳（referenceTimeMs，默认当前时间）：
+ *    - 若当天的预热时刻还在未来，排期在今天该时刻；
+ *    - 若当天的预热时刻已在过去，排期在明天的同一时刻。
+ * 5. 预期重置时间 = 预热时间戳 + leadHours * 3600 * 1000。
+ */
+export function calculateTargetResetWarmupTime(
+  targetResetTime: string = DEFAULT_TARGET_RESET_TIME,
+  leadHours: number = DEFAULT_TARGET_LEAD_HOURS,
+  referenceTimeMs?: number
+): TargetResetWarmupTimeResult {
+  const nowMs = typeof referenceTimeMs === 'number' && referenceTimeMs > 0 ? referenceTimeMs : Date.now();
+  const safeLeadHours = Math.max(0, Number(leadHours) || 0);
+
+  // 解析目标重置时间
+  const { hours: targetH, minutes: targetM, totalMinutes: targetTotalM } = parseTimeToMinutes(targetResetTime);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const targetResetTimeStr = `${pad(targetH)}:${pad(targetM)}`;
+
+  // 计算每日实际预热时刻（分钟数）
+  const leadMinutes = Math.round(safeLeadHours * 60);
+  let warmupTotalM = (targetTotalM - leadMinutes) % 1440;
+  if (warmupTotalM < 0) warmupTotalM += 1440;
+
+  const warmupH = Math.floor(warmupTotalM / 60);
+  const warmupM = warmupTotalM % 60;
+  const warmupTimeStr = `${pad(warmupH)}:${pad(warmupM)}`;
+
+  // 基于当前日期构建预热时刻 Date 对象
+  const refDate = new Date(nowMs);
+  const candidateWarmupDate = new Date(
+    refDate.getFullYear(),
+    refDate.getMonth(),
+    refDate.getDate(),
+    warmupH,
+    warmupM,
+    0,
+    0
+  );
+
+  // 若当天的预热时间点在基准时间之前，说明今天已过该点，下次预热安排在明天的同一时刻
+  if (candidateWarmupDate.getTime() <= nowMs) {
+    candidateWarmupDate.setDate(candidateWarmupDate.getDate() + 1);
+  }
+
+  const nextWarmupAtMs = candidateWarmupDate.getTime();
+  const expectedResetAtMs = nextWarmupAtMs + Math.round(safeLeadHours * 3600 * 1000);
+
+  return {
+    nextWarmupAtMs,
+    expectedResetAtMs,
+    warmupTimeStr,
+    targetResetTimeStr,
+    leadHours: safeLeadHours,
+  };
+}
+
+/**
  * 读取用户持久化保存的发送内容 (Prompt)，未修改时默认返回 'ping'
  */
 export function loadWarmupPrompt(): string {
@@ -432,9 +626,10 @@ export function saveWarmupPrompt(prompt: string): void {
 export function loadAccountWarmupConfig(
   accountKey: string,
   provider: string,
-  dynamicModels?: Array<{ id: string; name?: string }>
+  dynamicModels?: Array<{ id: string; name?: string }>,
+  options?: WarmupCandidateModelsOptions
 ): AccountWarmupConfig {
-  const defaultModel = getDefaultWarmupModel(provider, dynamicModels);
+  const defaultModel = getDefaultWarmupModel(provider, dynamicModels, options);
   const defaultPrompt = loadWarmupPrompt();
 
   const fallback: AccountWarmupConfig = {
@@ -445,6 +640,8 @@ export function loadAccountWarmupConfig(
     inferredDelaySeconds: DEFAULT_INFERRED_DELAY_SECONDS,
     intervalMinutes: DEFAULT_INTERVAL_MINUTES,
     enabled: false,
+    targetResetTime: DEFAULT_TARGET_RESET_TIME,
+    targetLeadHours: DEFAULT_TARGET_LEAD_HOURS,
   };
 
   if (typeof window === 'undefined' || !window.localStorage) {
@@ -462,7 +659,12 @@ export function loadAccountWarmupConfig(
         typeof parsed.maxTokens === 'number' && parsed.maxTokens > 0
           ? parsed.maxTokens
           : DEFAULT_WARMUP_MAX_TOKENS,
-      mode: parsed.mode === 'interval' ? 'interval' : 'inferred',
+      mode:
+        parsed.mode === 'interval'
+          ? 'interval'
+          : parsed.mode === 'target_reset'
+            ? 'target_reset'
+            : 'inferred',
       inferredDelaySeconds:
         typeof parsed.inferredDelaySeconds === 'number' && parsed.inferredDelaySeconds >= 0
           ? parsed.inferredDelaySeconds
@@ -476,6 +678,14 @@ export function loadAccountWarmupConfig(
         typeof parsed.customEndpoint === 'string' && parsed.customEndpoint.trim()
           ? parsed.customEndpoint.trim()
           : undefined,
+      targetResetTime:
+        typeof parsed.targetResetTime === 'string' && parsed.targetResetTime.trim()
+          ? parsed.targetResetTime.trim()
+          : DEFAULT_TARGET_RESET_TIME,
+      targetLeadHours:
+        typeof parsed.targetLeadHours === 'number' && parsed.targetLeadHours >= 0
+          ? parsed.targetLeadHours
+          : DEFAULT_TARGET_LEAD_HOURS,
     };
   } catch {
     return fallback;
