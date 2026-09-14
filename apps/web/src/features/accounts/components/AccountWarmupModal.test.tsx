@@ -327,6 +327,21 @@ describe('AccountWarmupModal', () => {
   });
 
   it('triggers refresh and re-infer button', async () => {
+    vi.mocked(mockScheduler.getWarmupState).mockReturnValue({
+      config: {
+        model: 'gpt-5-codex',
+        prompt: DEFAULT_WARMUP_PROMPT,
+        maxTokens: 16,
+        mode: 'inferred',
+        inferredDelaySeconds: 10,
+        intervalMinutes: 60,
+        enabled: true,
+      },
+      nextWarmupAtMs: 1700003610000,
+      lastRecord: null,
+      isRunning: false,
+    });
+
     const row = makeMockRow();
     let renderer!: ReactTestRenderer;
 
