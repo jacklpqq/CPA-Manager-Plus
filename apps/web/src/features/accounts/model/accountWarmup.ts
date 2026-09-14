@@ -153,7 +153,7 @@ export function extractExcludedModelsFromRow(rowOrFile?: AccountRow | AuthFileIt
  * 从凭据行或 AuthFileItem 提取前缀 (prefix)
  */
 export function extractPrefixFromRow(rowOrFile?: AccountRow | AuthFileItem | null): string {
-  if (!rowOrFile || typeof rowOrFile !== 'object') return [];
+  if (!rowOrFile || typeof rowOrFile !== 'object') return '';
   const rawRecord = ('raw' in rowOrFile && rowOrFile.raw
     ? rowOrFile.raw
     : rowOrFile) as Record<string, unknown> | null | undefined;
