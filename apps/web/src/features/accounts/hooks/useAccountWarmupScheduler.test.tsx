@@ -217,6 +217,7 @@ const createMemoryStorage = () => {
   });
 
   it('refreshes quota and re-infers warmup time', async () => {
+    const now = Date.now();
     const row = makeMockRow();
     const windows: AccountQuotaDisplayWindow[] = [
       {
@@ -228,9 +229,9 @@ const createMemoryStorage = () => {
         resetLabel: '5h',
         resetAccuracy: 'exact',
         limitWindowSeconds: 18000,
-        resetAtMs: 1700007200000,
-        fromMs: 1700000000000,
-        toMs: 1700007200000,
+        resetAtMs: now + 7200000,
+        fromMs: now,
+        toMs: now + 7200000,
       },
     ];
 
@@ -249,7 +250,7 @@ const createMemoryStorage = () => {
     });
 
     expect(refreshAccountQuota).toHaveBeenCalledWith(row);
-    expect(reinferred.nextWarmupAtMs).toBe(1700007200000 + 10000);
+    expect(reinferred.nextWarmupAtMs).toBe(now + 7200000 + 10000);
     expect(reinferred.isFuture).toBe(true);
   });
 

@@ -28,9 +28,33 @@ vi.mock('@/components/ui/Modal', () => ({
       <div data-testid="mock-modal">
         <div data-testid="mock-modal-title">{title}</div>
         <div data-testid="mock-modal-body">{children}</div>
-        <div data-testid="mock-modal-footer">{footer}</div>
+        {footer && <div data-testid="mock-modal-footer">{footer}</div>}
       </div>
     ) : null,
+}));
+
+// 模拟 AutocompleteInput 组件，避免在 Node 环境执行 document 事件监听与 DOM 计算
+vi.mock('@/components/ui/AutocompleteInput', () => ({
+  AutocompleteInput: ({
+    value,
+    onChange,
+    placeholder,
+    disabled,
+  }: {
+    value?: string;
+    onChange?: (val: string) => void;
+    placeholder?: string;
+    disabled?: boolean;
+    options?: unknown[];
+  }) => (
+    <input
+      data-testid="mock-autocomplete-input"
+      value={value}
+      disabled={disabled}
+      placeholder={placeholder}
+      onChange={(e) => onChange?.(e.target.value)}
+    />
+  ),
 }));
 
 // 模拟远程模型 API
@@ -136,6 +160,13 @@ describe('AccountWarmupModal', () => {
     vi.stubGlobal('window', {
       ...(typeof window !== 'undefined' ? window : {}),
       localStorage: storage,
+    });
+    vi.stubGlobal('document', {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      querySelector: vi.fn(),
+      querySelectorAll: vi.fn(),
+      getElementById: vi.fn(),
     });
     vi.clearAllMocks();
     onClose = vi.fn();

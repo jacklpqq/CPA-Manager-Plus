@@ -351,7 +351,18 @@ describe('accountWarmup model', () => {
         },
       ];
 
-      const row = makeMockRow();
+      const row = makeMockRow({
+        quota: {
+          status: 'ok',
+          remainingPercent: 0,
+          usedPercent: 100,
+          resetLabel: '5h',
+          resetAtMs: now - 30000,
+          resetAccuracy: 'exact',
+          planType: 'pro',
+          source: 'cache',
+        },
+      });
       const result = inferNextWarmupTime(row, 10, windows);
       expect(result.resetAtMs).toBe(now - 30000);
       expect(result.nextWarmupAtMs).toBe(now - 30000 + 10000);
