@@ -349,3 +349,34 @@
     transform: rotate(360deg);
   }
 }
+
+.endpointHint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 6px 10px;
+  border-radius: $radius-sm;
+  background: color-mix(in srgb, var(--surface-subtle) 90%, var(--bg-primary));
+  border: 1px dashed var(--border-color);
+  font-size: 11px;
+  color: var(--text-secondary);
+
+  code {
+    color: var(--primary-color);
+    font-family: monospace;
+    word-break: break-all;
+  }
+}
+
+.protocolBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: $radius-sm;
+  font-size: 10px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-primary));
+  color: var(--primary-color);
+  margin-left: auto;
+}

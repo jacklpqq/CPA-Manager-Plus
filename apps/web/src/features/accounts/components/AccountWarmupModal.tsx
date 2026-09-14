@@ -38,6 +38,8 @@ import {
   DEFAULT_WARMUP_MAX_TOKENS,
   DEFAULT_WARMUP_PROMPT,
   calculateTargetResetWarmupTime,
+  fetchAuthFileSupportedModels,
+  getDefaultWarmupEndpoint,
   getWarmupCandidateModels,
   inferNextWarmupTime,
   loadWarmupPrompt,
@@ -48,6 +50,7 @@ import {
   type TargetResetWarmupTimeResult,
   type WarmupExecutionResult,
 } from '../model/accountWarmup';
+import type { AuthFileModelItem } from '@/features/authFiles/constants';
 import type { AccountWarmupRuntimeState } from '../hooks/useAccountWarmupScheduler';
 import styles from './AccountWarmupModal.module.scss';
 
@@ -62,6 +65,14 @@ export interface AccountWarmupModalProps {
   quotaWindows?: AccountQuotaDisplayWindow[];
   /** 可选的 API 请求作用域 (用于多工作空间/实例隔离) */
   requestScope?: AuthFilesApiRequestScope;
+  /** 父组件传入的已缓存/加载的动态模型列表 */
+  modelsList?: AuthFileModelItem[];
+  /** 父组件传入的官方渠道模型定义列表 */
+  modelDefinitions?: AuthFileModelItem[];
+  /** 全局排除规则 */
+  globalExcluded?: Record<string, string[]>;
+  /** 外部刷新模型列表回调 */
+  onRefreshModels?: () => Promise<void> | void;
   /** 调度器控制对象 */
   scheduler: {
     getWarmupState: (row: AccountRow) => AccountWarmupRuntimeState;
@@ -105,12 +116,16 @@ export function AccountWarmupModal({
   onClose,
   quotaWindows,
   requestScope,
+  modelsList,
+  modelDefinitions,
+  globalExcluded = {},
+  onRefreshModels,
   scheduler,
 }: AccountWarmupModalProps) {
   const { t } = useTranslation();
 
-  // 动态模型列表 (从凭证后端真实读取)
-  const [dynamicModels, setDynamicModels] = useState<Array<{ id: string; name?: string }>>([]);
+  // 动态模型列表 (复用系统已有模型支持列表方法获取)
+  const [dynamicModels, setDynamicModels] = useState<Array<{ id: string; name?: string; display_name?: string }>>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
   // 本地正在执行立即预热标识
@@ -133,16 +148,15 @@ export function AccountWarmupModal({
   const [targetLeadHours, setTargetLeadHours] = useState(DEFAULT_TARGET_LEAD_HOURS);
   const [enabled, setEnabled] = useState(false);
 
-  // 动态拉取该认证文件支持的真实可用模型列表
+  // 动态拉取该认证文件支持的真实可用模型列表 (复用系统已有模型支持列表方法)
   const loadDynamicModels = useCallback(async () => {
     if (!row) return [];
-    const patchTarget = getAuthFilePatchTarget(row.raw);
-    const selector = String(patchTarget.runtimeId ?? '').trim() || row.raw.name || row.fileName;
     setModelsLoading(true);
     try {
-      const items = requestScope
-        ? await authFilesApi.getModelsForAuthFile(selector, requestScope)
-        : await authFilesApi.getModelsForAuthFile(selector);
+      const items = await fetchAuthFileSupportedModels(row, requestScope, globalExcluded, {
+        modelsList,
+        modelDefinitions,
+      });
       setDynamicModels(items);
       return items;
     } catch {
@@ -151,7 +165,35 @@ export function AccountWarmupModal({
     } finally {
       setModelsLoading(false);
     }
-  }, [row, requestScope]);
+  }, [row, requestScope, globalExcluded, modelsList, modelDefinitions]);
+
+  // 主动刷新凭证模型列表并即时联动更新当前选中模型
+  const handleRefreshModels = useCallback(async () => {
+    if (!row) return;
+    setModelsLoading(true);
+    try {
+      if (onRefreshModels) {
+        await onRefreshModels();
+      }
+      const items = await loadDynamicModels();
+      if (items && items.length > 0) {
+        const candidates = getWarmupCandidateModels(row.provider, items, { row });
+        if (candidates.length > 0) {
+          setModel(candidates[0]);
+        }
+      }
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [loadDynamicModels, onRefreshModels, row]);
+
+  // 当外部异步拉取的 modelsList 到达时，联动重新拉取可用模型
+  useEffect(() => {
+    if (!open || !row) return;
+    if (modelsList && modelsList.length > 0) {
+      void loadDynamicModels();
+    }
+  }, [modelsList, open, row, loadDynamicModels]);
 
   // 初始化与同步状态
   useEffect(() => {
@@ -176,7 +218,7 @@ export function AccountWarmupModal({
     void loadDynamicModels().then((items) => {
       if (isCancelled || !items || items.length === 0) return;
       const candidates = getWarmupCandidateModels(row.provider, items, { row });
-      // 若当前未指定模型，或之前保存的模型不在当前动态可用候选列表中，自动选中真实首选模型
+      // 若当前未指定模型，或之前保存的模型不在当前可用候选列表中，自动选中真实首选模型
       if (candidates.length > 0 && (!state.config.model || !candidates.includes(state.config.model))) {
         setModel(candidates[0]);
       }
@@ -359,7 +401,7 @@ export function AccountWarmupModal({
                 <button
                   type="button"
                   className={styles.restoreButton}
-                  onClick={() => void loadDynamicModels()}
+                  onClick={() => void handleRefreshModels()}
                   disabled={modelsLoading}
                   title={t('accounts.warmup_model_refresh')}
                 >
@@ -400,6 +442,19 @@ export function AccountWarmupModal({
                 style={{ minHeight: 36, height: 36 }}
               />
             </div>
+          </div>
+
+          {/* 预热端点与协议规范提示 */}
+          <div className={styles.endpointHint}>
+            <span>{t('accounts.warmup_endpoint_label', { defaultValue: '预热端点' })}:</span>
+            <code>{getDefaultWarmupEndpoint(row)}</code>
+            <span className={styles.protocolBadge}>
+              {row.provider?.toLowerCase() === 'codex'
+                ? 'Codex /responses 专属协议'
+                : row.provider?.toLowerCase() === 'claude'
+                  ? 'Claude /messages 协议'
+                  : 'OpenAI 兼容协议'}
+            </span>
           </div>
 
           {/* 发送内容 (Prompt) 文本框，配置默认值 'ping' 与 恢复默认值 按钮 */}

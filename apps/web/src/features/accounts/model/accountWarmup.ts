@@ -4,10 +4,24 @@
  */
 
 import { apiCallApi, getApiCallErrorMessage, type ApiCallResult } from '@/services/api/apiCall';
+import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
 import { normalizeAuthIndex } from '@/utils/authIndex';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
-import { matchesAccountModelRule } from './accountModelRules';
-import { normalizeExcludedModels, parseExcludedModelsText } from '@/features/authFiles/constants';
+import {
+  buildAccountModelRuleProjection,
+  matchesAccountModelRule,
+} from './accountModelRules';
+import {
+  normalizeExcludedModels,
+  normalizeProviderKey,
+  parseExcludedModelsText,
+  type AuthFileModelItem,
+} from '@/features/authFiles/constants';
+import { getAuthFilePatchTarget } from '@/features/authFiles/model/credentialStatus';
+import {
+  buildClaudeMessagesEndpoint,
+  buildCodexResponsesEndpoint,
+} from '@/components/providers/utils';
 import type { AuthFileItem } from '@/types';
 import type { AccountQuotaDisplayWindow } from './accountQuotaDisplayWindows';
 import type { AccountRow } from './accountRows';
@@ -274,6 +288,14 @@ export function getWarmupCandidateModels(
 
 /**
  * 依据凭据属性与 Provider 获取默认预热请求的 Endpoint
+ *
+ * 核心设计（代码即文档）：
+ * 1. Codex 凭据为 ChatGPT 订阅账号（Plus/Team/Pro），非 OpenAI Platform 付费 API。
+ *    因此绝对不能向 /v1/chat/completions 发送请求（否则必报 429 You have no credits remaining）；
+ *    必须使用 Codex 官方专用的 /v1/responses 端点（如 https://api.openai.com/v1/responses）。
+ * 2. Claude 凭据走 /v1/messages 端点（如 https://api.anthropic.com/v1/messages）。
+ * 3. xAI CLI/Grok 凭据走 https://cli-chat-proxy.grok.com/v1/responses。
+ * 4. 若凭据自定义了 base_url / endpoint，则基于各自协议规范化端点。
  */
 export function getDefaultWarmupEndpoint(row: AccountRow): string {
   // 若凭证原始数据中存在显式指定的 base_url 或 endpoint，则以其为准
@@ -288,9 +310,15 @@ export function getDefaultWarmupEndpoint(row: AccountRow): string {
   if (rawBase && typeof rawBase === 'string' && rawBase.trim()) {
     const trimmedBase = rawBase.trim().replace(/\/+$/g, '');
     if (normalized === 'claude') {
-      if (trimmedBase.endsWith('/v1/messages')) return trimmedBase;
-      if (trimmedBase.endsWith('/v1')) return `${trimmedBase}/messages`;
-      return `${trimmedBase}/v1/messages`;
+      return buildClaudeMessagesEndpoint(trimmedBase);
+    }
+    if (normalized === 'codex') {
+      return buildCodexResponsesEndpoint(trimmedBase);
+    }
+    if (normalized === 'xai' && trimmedBase.includes('cli-chat-proxy')) {
+      if (trimmedBase.endsWith('/v1/responses')) return trimmedBase;
+      if (trimmedBase.endsWith('/v1')) return `${trimmedBase}/responses`;
+      return `${trimmedBase}/v1/responses`;
     }
     if (trimmedBase.endsWith('/chat/completions')) return trimmedBase;
     if (trimmedBase.endsWith('/v1')) return `${trimmedBase}/chat/completions`;
@@ -301,16 +329,17 @@ export function getDefaultWarmupEndpoint(row: AccountRow): string {
   switch (normalized) {
     case 'claude':
       return 'https://api.anthropic.com/v1/messages';
+    case 'codex':
+      return 'https://api.openai.com/v1/responses';
+    case 'xai':
+      return 'https://cli-chat-proxy.grok.com/v1/responses';
     case 'gemini':
     case 'aistudio':
       return 'https://generativelanguage.googleapis.com/v1beta/chat/completions';
-    case 'xai':
-      return 'https://api.x.ai/v1/chat/completions';
     case 'kimi':
       return 'https://api.moonshot.cn/v1/chat/completions';
     case 'qwen':
       return 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-    case 'codex':
     case 'openai':
     default:
       return 'https://api.openai.com/v1/chat/completions';
@@ -749,56 +778,225 @@ export function saveWarmupRecord(accountKey: string, record: AccountWarmupRecord
 }
 
 /**
+ * 剥离发往上游 API 时的路由前缀 (如 'pqq/gpt-5.5' -> 'gpt-5.5')
+ * 保证上游服务商（OpenAI, Anthropic 等）能够识别真实的基础模型名称
+ */
+export function stripModelPrefix(model: string, prefix?: string): string {
+  const trimmedModel = String(model || '').trim();
+  if (!trimmedModel) return '';
+  const trimmedPrefix = String(prefix || '').trim().replace(/\/+$/g, '');
+  if (trimmedPrefix && trimmedModel.toLowerCase().startsWith(`${trimmedPrefix.toLowerCase()}/`)) {
+    return trimmedModel.slice(trimmedPrefix.length + 1).trim();
+  }
+  return trimmedModel;
+}
+
+/**
+ * 复用系统已有的模型支持列表获取逻辑，获取凭据真实可用的模型列表
+ *
+ * 核心设计（代码即文档）：
+ * 1. 凭据自身配置中声明的模型 (row.raw.models)
+ * 2. CPA 运行时动态模型 (authFilesApi.getModelsForAuthFile)
+ * 3. 官方渠道标准模型定义 (authFilesApi.getModelDefinitions)
+ * 4. 结合全局排除规则与凭据自身的 excluded-models 排除规则 (buildAccountModelRuleProjection)
+ * 5. 过滤掉被禁用的模型，仅返回可用或未知的模型列表
+ */
+export interface FetchAuthFileSupportedModelsOptions {
+  /** 外部已预加载或缓存的运行时模型列表 */
+  modelsList?: AuthFileModelItem[];
+  /** 外部已预加载或缓存的官方渠道标准模型定义 */
+  modelDefinitions?: AuthFileModelItem[];
+}
+
+export async function fetchAuthFileSupportedModels(
+  row: AccountRow,
+  requestScope?: AuthFilesApiRequestScope,
+  globalExcluded: Record<string, string[]> = {},
+  options?: FetchAuthFileSupportedModelsOptions
+): Promise<Array<{ id: string; name?: string; display_name?: string }>> {
+  const providerKey = normalizeProviderKey(row.provider);
+  const definitionsChannel = providerKey === 'gemini-cli' ? 'gemini' : providerKey;
+  const patchTarget = getAuthFilePatchTarget(row.raw);
+  const selector = String(patchTarget.runtimeId ?? '').trim() || row.raw.name || row.fileName;
+
+  // 1. 读取凭据自身配置中静态声明的 models (如 pqq.json 中声明的 models 数组)
+  const rawModels: Array<{ id: string; name?: string; display_name?: string }> = [];
+  const rawRecord = (row.raw ?? {}) as Record<string, unknown>;
+  const declaredModels = rawRecord.models;
+  if (Array.isArray(declaredModels)) {
+    declaredModels.forEach((item: unknown) => {
+      if (typeof item === 'string' && item.trim()) {
+        rawModels.push({ id: item.trim(), name: item.trim() });
+      } else if (item && typeof item === 'object') {
+        const obj = item as Record<string, unknown>;
+        const id = String(obj.name || obj.id || obj.model || '').trim();
+        const alias = String(obj.alias || obj.display_name || '').trim();
+        if (id) {
+          rawModels.push({ id, name: id, display_name: alias || undefined });
+        }
+      }
+    });
+  }
+
+  // 2. 检查是否有外部传入的预加载模型与定义；若缺失则发起网络请求
+  let runtimeModels: AuthFileModelItem[] =
+    options?.modelsList && options.modelsList.length > 0 ? options.modelsList : [];
+  let modelDefinitions: AuthFileModelItem[] =
+    options?.modelDefinitions && options.modelDefinitions.length > 0
+      ? options.modelDefinitions
+      : [];
+
+  if (runtimeModels.length === 0 || modelDefinitions.length === 0) {
+    const [runtimeResult, definitionsResult] = await Promise.allSettled([
+      runtimeModels.length > 0
+        ? Promise.resolve(runtimeModels)
+        : requestScope
+          ? authFilesApi.getModelsForAuthFile(selector, requestScope)
+          : authFilesApi.getModelsForAuthFile(selector),
+      modelDefinitions.length > 0
+        ? Promise.resolve(modelDefinitions)
+        : definitionsChannel
+          ? requestScope
+            ? authFilesApi.getModelDefinitions(definitionsChannel, requestScope)
+            : authFilesApi.getModelDefinitions(definitionsChannel)
+          : Promise.resolve([]),
+    ]);
+
+    if (runtimeModels.length === 0 && runtimeResult.status === 'fulfilled' && Array.isArray(runtimeResult.value)) {
+      runtimeModels = runtimeResult.value;
+    }
+    if (modelDefinitions.length === 0 && definitionsResult.status === 'fulfilled' && Array.isArray(definitionsResult.value)) {
+      modelDefinitions = definitionsResult.value;
+    }
+  }
+
+  // 3. 复用系统已有的 buildAccountModelRuleProjection 投影函数进行规则计算
+  const credentialRules = extractExcludedModelsFromRow(row);
+  const projection = buildAccountModelRuleProjection({
+    provider: providerKey,
+    runtimeModels,
+    modelDefinitions,
+    credentialRules,
+    globalRules: globalExcluded,
+    globalRulesKnown: Object.keys(globalExcluded).length > 0,
+  });
+
+  // 4. 提取 projection 中可用 (available) 或未明确排除的模型
+  const availableFromProjection = projection.rows
+    .filter((r) => r.scope === 'available' || r.scope === 'unknown')
+    .map((r) => ({
+      id: r.id,
+      name: r.id,
+      display_name: r.display_name,
+    }));
+
+  // 5. 整合凭据声明模型、运行时动态模型与官方定义，严格去重并过滤排除项
+  const result: Array<{ id: string; name?: string; display_name?: string }> = [];
+  const seenIds = new Set<string>();
+
+  const addModel = (m: { id: string; name?: string; display_name?: string }) => {
+    const norm = m.id.trim().toLowerCase();
+    if (!norm || seenIds.has(norm)) return;
+    const isExcluded = credentialRules.some((pattern) => matchesAccountModelRule(m.id, pattern));
+    if (isExcluded) return;
+    seenIds.add(norm);
+    result.push(m);
+  };
+
+  rawModels.forEach(addModel);
+  availableFromProjection.forEach(addModel);
+  runtimeModels.forEach((m) => addModel({ id: m.id, name: m.id, display_name: m.display_name }));
+
+  return result;
+}
+
+/**
  * 构建请求体与请求头
+ * 严格按照 Codex / Claude / xAI / OpenAI 等协议组装 Headers 与 Body，杜绝 429 平台协议不兼容问题
  */
 export function buildWarmupPayload(
   provider: string,
   endpoint: string,
   model: string,
   prompt: string,
-  maxTokens: number
+  maxTokens: number,
+  rawRow?: AccountRow | null
 ): { header: Record<string, string>; data: string } {
   const normalized = String(provider || '').trim().toLowerCase();
+  const prefix = rawRow ? extractPrefixFromRow(rawRow) : undefined;
+  // 剥离上游模型的前缀（如 'pqq/gpt-5.5' -> 'gpt-5.5'），避免上游报模型不存在
+  const upstreamModel = stripModelPrefix(model, prefix);
+
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     Authorization: 'Bearer $TOKEN$',
   };
 
-  // Claude 专属 header
+  // 1. Claude /messages 格式
   if (normalized === 'claude' || endpoint.includes('/messages')) {
     headers['x-api-key'] = '$TOKEN$';
     headers['anthropic-version'] = '2023-06-01';
-  }
-
-  // Claude /messages 格式
-  if (endpoint.includes('/messages')) {
+    headers['anthropic-beta'] = 'oauth-2025-04-20';
     return {
       header: headers,
       data: JSON.stringify({
-        model,
+        model: upstreamModel,
         max_tokens: maxTokens,
         messages: [{ role: 'user', content: prompt }],
       }),
     };
   }
 
-  // Codex /responses 格式
-  if (endpoint.includes('/responses')) {
+  // 2. Codex /responses 格式 (严格符合 Codex 客户端协议规范)
+  if (normalized === 'codex' || endpoint.includes('/responses')) {
+    headers['User-Agent'] =
+      'codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)';
+    headers['OpenAI-Beta'] = 'codex-1';
+    headers['Accept'] = 'application/json';
+
+    // 提取 Chatgpt-Account-Id (若凭据中包含)
+    const rawRecord = (rawRow?.raw ?? {}) as Record<string, unknown>;
+    const accountId = String(
+      rawRecord['chatgpt_account_id'] ??
+        rawRecord['chatgpt-account-id'] ??
+        rawRecord['accountId'] ??
+        rawRecord['account_id'] ??
+        ''
+    ).trim();
+    if (accountId) {
+      headers['Chatgpt-Account-Id'] = accountId;
+    }
+
     return {
       header: headers,
       data: JSON.stringify({
-        model,
+        model: upstreamModel,
         input: prompt,
         stream: false,
       }),
     };
   }
 
-  // 默认 OpenAI /chat/completions 格式
+  // 3. xAI CLI Proxy /responses 格式
+  if (normalized === 'xai' && endpoint.includes('cli-chat-proxy')) {
+    headers['x-xai-token-auth'] = 'xai-grok-cli';
+    headers['x-grok-client-version'] = '0.2.101';
+    headers['User-Agent'] = 'xai-cli/0.2.101';
+    return {
+      header: headers,
+      data: JSON.stringify({
+        model: upstreamModel,
+        input: prompt,
+        stream: false,
+      }),
+    };
+  }
+
+  // 4. 默认 OpenAI /chat/completions 兼容格式 (适用于 OpenAI API Key、Gemini、Kimi、Qwen 等)
   return {
     header: headers,
     data: JSON.stringify({
-      model,
+      model: upstreamModel,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: maxTokens,
       stream: false,
@@ -819,7 +1017,7 @@ export async function executeWarmupInference(
   const prompt = config.prompt.trim() || DEFAULT_WARMUP_PROMPT;
   const maxTokens = config.maxTokens > 0 ? config.maxTokens : DEFAULT_WARMUP_MAX_TOKENS;
 
-  const { header, data } = buildWarmupPayload(row.provider, endpoint, model, prompt, maxTokens);
+  const { header, data } = buildWarmupPayload(row.provider, endpoint, model, prompt, maxTokens, row);
 
   const startTime = performance.now();
   let statusCode = 0;

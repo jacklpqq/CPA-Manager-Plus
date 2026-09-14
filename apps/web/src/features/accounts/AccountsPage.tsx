@@ -6538,6 +6538,16 @@ export function AccountsPage() {
     [rows, warmupTargetRowKey]
   );
 
+  const handleOpenWarmup = useCallback(
+    (targetRow: AccountRow) => {
+      setWarmupTargetRowKey(targetRow.selectionKey);
+      if (targetRow.raw) {
+        void showModels(targetRow.raw);
+      }
+    },
+    [showModels]
+  );
+
   const getWarmupQuotaWindows = useCallback(
     (row: AccountRow) => quotaDisplayWindowsByRowKey.get(row.selectionKey) ?? buildQuotaDisplayWindows(row),
     [quotaDisplayWindowsByRowKey, buildQuotaDisplayWindows]
@@ -8126,7 +8136,7 @@ export function AccountsPage() {
         className={`${styles.accountIconButton} ${styles.accountIconButtonWarmup} ${
           isWarmupScheduled ? styles.accountIconButtonWarmupActive : ''
         }`}
-        onClick={() => setWarmupTargetRowKey(row.selectionKey)}
+        onClick={() => handleOpenWarmup(row)}
         disabled={disableControls || row.runtimeOnly}
         loading={isWarmupRunning}
         title={
@@ -9655,7 +9665,7 @@ export function AccountsPage() {
         label: t('accounts.warmup_action'),
         icon: <IconFlame size={15} />,
         onClick: () => {
-          setWarmupTargetRowKey(selectedRow.selectionKey);
+          handleOpenWarmup(selectedRow);
         },
         disabled: selectedRow.runtimeOnly,
       },
@@ -10184,6 +10194,12 @@ export function AccountsPage() {
           warmupTargetRow ? getWarmupQuotaWindows(warmupTargetRow) : undefined
         }
         requestScope={authFilesRequestScope}
+        modelsList={
+          modelsSelectionKey === warmupTargetRow?.selectionKey ? modelsList : undefined
+        }
+        modelDefinitions={modelDefinitions}
+        globalExcluded={oauthState.excluded}
+        onRefreshModels={refreshModels}
         scheduler={warmupScheduler}
       />
     </div>

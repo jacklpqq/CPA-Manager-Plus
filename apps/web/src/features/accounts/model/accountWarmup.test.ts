@@ -15,6 +15,7 @@ import {
   extractExcludedModelsFromRow,
   extractModelResponseContent,
   extractPrefixFromRow,
+  fetchAuthFileSupportedModels,
   getDefaultWarmupEndpoint,
   getDefaultWarmupModel,
   getWarmupCandidateModels,
@@ -26,6 +27,7 @@ import {
   saveAccountWarmupConfig,
   saveWarmupPrompt,
   saveWarmupRecord,
+  stripModelPrefix,
   type AccountWarmupConfig,
   type AccountWarmupRecord,
 } from './accountWarmup';
@@ -194,11 +196,22 @@ describe('accountWarmup model', () => {
         'https://generativelanguage.googleapis.com/v1beta/chat/completions'
       );
       expect(getDefaultWarmupEndpoint(makeMockRow({ provider: 'xai' }))).toBe(
-        'https://api.x.ai/v1/chat/completions'
+        'https://cli-chat-proxy.grok.com/v1/responses'
       );
       expect(getDefaultWarmupEndpoint(makeMockRow({ provider: 'codex' }))).toBe(
-        'https://api.openai.com/v1/chat/completions'
+        'https://api.openai.com/v1/responses'
       );
+    });
+
+    it('builds codex responses endpoint properly when custom baseUrl is provided', () => {
+      const row = makeMockRow({
+        provider: 'codex',
+        raw: {
+          name: 'codex.json',
+          baseUrl: 'https://codex-proxy.example.com/v1',
+        },
+      });
+      expect(getDefaultWarmupEndpoint(row)).toBe('https://codex-proxy.example.com/v1/responses');
     });
   });
 
@@ -458,6 +471,15 @@ describe('accountWarmup model', () => {
     });
   });
 
+  describe('stripModelPrefix', () => {
+    it('strips configured prefix from model identifier', () => {
+      expect(stripModelPrefix('pqq/gpt-5.5', 'pqq')).toBe('gpt-5.5');
+      expect(stripModelPrefix('gpt-5.5', 'pqq')).toBe('gpt-5.5');
+      expect(stripModelPrefix('pqq/gpt-5.5', '')).toBe('pqq/gpt-5.5');
+      expect(stripModelPrefix('', 'pqq')).toBe('');
+    });
+  });
+
   describe('buildWarmupPayload', () => {
     it('builds Claude messages payload with anthropic headers', () => {
       const result = buildWarmupPayload(
@@ -476,35 +498,74 @@ describe('accountWarmup model', () => {
       expect(data.max_tokens).toBe(16);
     });
 
-    it('builds OpenAI chat completions payload', () => {
+    it('builds OpenAI chat completions payload for openai provider', () => {
       const result = buildWarmupPayload(
-        'codex',
+        'openai',
         'https://api.openai.com/v1/chat/completions',
-        'gpt-5-codex',
+        'gpt-4o',
         'ping',
         16
       );
 
       expect(result.header.Authorization).toBe('Bearer $TOKEN$');
       const data = JSON.parse(result.data);
-      expect(data.model).toBe('gpt-5-codex');
+      expect(data.model).toBe('gpt-4o');
       expect(data.messages[0].content).toBe('ping');
       expect(data.max_tokens).toBe(16);
     });
 
-    it('builds Codex responses payload when endpoint has /responses', () => {
+    it('builds Codex responses payload with codex-tui headers and strips prefix', () => {
+      const row = makeMockRow({
+        raw: {
+          name: 'pqq.json',
+          prefix: 'pqq',
+          chatgpt_account_id: 'acc-uuid-1234',
+        },
+      });
+
       const result = buildWarmupPayload(
         'codex',
         'https://api.openai.com/v1/responses',
-        'gpt-5-codex',
+        'pqq/gpt-5.5',
         'ping',
-        16
+        16,
+        row
       );
 
+      expect(result.header['User-Agent']).toContain('codex-tui');
+      expect(result.header['OpenAI-Beta']).toBe('codex-1');
+      expect(result.header['Chatgpt-Account-Id']).toBe('acc-uuid-1234');
       const data = JSON.parse(result.data);
-      expect(data.model).toBe('gpt-5-codex');
+      expect(data.model).toBe('gpt-5.5'); // 验证剥离了 'pqq/' 前缀
       expect(data.input).toBe('ping');
       expect(data.stream).toBe(false);
+    });
+  });
+
+  describe('fetchAuthFileSupportedModels', () => {
+    it('integrates preloaded models, credential declared models and filters excluded models', async () => {
+      const row = makeMockRow({
+        raw: {
+          name: 'custom.json',
+          models: ['declared-model-1', 'declared-model-2'],
+          'excluded-models': ['declared-model-2'],
+        },
+      });
+
+      const models = await fetchAuthFileSupportedModels(row, undefined, {}, {
+        modelsList: [
+          { id: 'runtime-model-1', name: 'Runtime Model 1' },
+          { id: 'declared-model-2', name: 'Excluded Model' },
+        ],
+        modelDefinitions: [
+          { id: 'definition-model-1', name: 'Def Model 1' },
+        ],
+      });
+
+      const ids = models.map((m) => m.id);
+      expect(ids).toContain('declared-model-1');
+      expect(ids).toContain('runtime-model-1');
+      expect(ids).not.toContain('declared-model-2'); // 验证排除项生效
     });
   });
 

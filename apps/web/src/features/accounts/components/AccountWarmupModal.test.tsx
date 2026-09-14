@@ -76,12 +76,13 @@ vi.mock('@/components/ui/AutocompleteInput', () => ({
 }));
 
 // 模拟远程模型 API
-const { mockGetModelsForAuthFile } = vi.hoisted(() => ({
+const { mockGetModelsForAuthFile, mockGetModelDefinitions } = vi.hoisted(() => ({
   mockGetModelsForAuthFile: vi.fn().mockResolvedValue([
     { id: 'gpt-5.5', name: 'GPT-5.5' },
     { id: 'pqq/gpt-5.5', name: 'PQQ GPT-5.5' },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
   ]),
+  mockGetModelDefinitions: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock('@/services/api', async (importOriginal) => {
@@ -90,6 +91,7 @@ vi.mock('@/services/api', async (importOriginal) => {
     ...actual,
     authFilesApi: {
       getModelsForAuthFile: mockGetModelsForAuthFile,
+      getModelDefinitions: mockGetModelDefinitions,
     },
   };
 });
@@ -97,6 +99,7 @@ vi.mock('@/services/api', async (importOriginal) => {
 vi.mock('@/services/api/authFiles', () => ({
   authFilesApi: {
     getModelsForAuthFile: mockGetModelsForAuthFile,
+    getModelDefinitions: mockGetModelDefinitions,
   },
 }));
 
@@ -428,12 +431,15 @@ describe('AccountWarmupModal', () => {
     const row = makeMockRow();
     let renderer!: ReactTestRenderer;
 
+    const onRefreshModels = vi.fn().mockResolvedValue(undefined);
+
     await act(async () => {
       renderer = create(
         <AccountWarmupModal
           open={true}
           row={row}
           onClose={onClose}
+          onRefreshModels={onRefreshModels}
           scheduler={mockScheduler}
         />
       );
@@ -441,6 +447,10 @@ describe('AccountWarmupModal', () => {
     });
 
     expect(mockGetModelsForAuthFile).toHaveBeenCalledTimes(1);
+
+    // 验证展示了 Codex 专属协议端点提示
+    const bodyStr = JSON.stringify(renderer.toJSON());
+    expect(bodyStr).toContain('https://api.openai.com/v1/responses');
 
     // 找到刷新模型列表按钮 (title="accounts.warmup_model_refresh")
     const refreshBtn = renderer.root.findByProps({ title: 'accounts.warmup_model_refresh' });
@@ -451,6 +461,8 @@ describe('AccountWarmupModal', () => {
       await Promise.resolve();
     });
 
+    // 验证触发了外部模型刷新回调
+    expect(onRefreshModels).toHaveBeenCalledTimes(1);
     // 再次触发加载
     expect(mockGetModelsForAuthFile).toHaveBeenCalledTimes(2);
   });
