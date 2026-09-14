@@ -9,7 +9,7 @@
  * 支持自定义发送内容（默认 ping，支持恢复默认与持久化）
  */
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AutocompleteInput } from '@/components/ui/AutocompleteInput';
 import { Button } from '@/components/ui/Button';
@@ -52,6 +52,9 @@ import {
 import type { AuthFileModelItem } from '@/features/authFiles/constants';
 import type { AccountWarmupRuntimeState } from '../hooks/useAccountWarmupScheduler';
 import styles from './AccountWarmupModal.module.scss';
+
+/** 默认全局排除规则静态空对象，保证空值场景下引用不变，避免 React 钩子依赖死循环 */
+const DEFAULT_EMPTY_GLOBAL_EXCLUDED: Record<string, string[]> = {};
 
 export interface AccountWarmupModalProps {
   /** 弹窗是否可见 */
@@ -117,7 +120,7 @@ export function AccountWarmupModal({
   requestScope,
   modelsList,
   modelDefinitions,
-  globalExcluded = {},
+  globalExcluded = DEFAULT_EMPTY_GLOBAL_EXCLUDED,
   onRefreshModels,
   scheduler,
 }: AccountWarmupModalProps) {
@@ -147,15 +150,30 @@ export function AccountWarmupModal({
   const [targetLeadHours, setTargetLeadHours] = useState(DEFAULT_TARGET_LEAD_HOURS);
   const [enabled, setEnabled] = useState(false);
 
+  // 保持对动态配置与上下文引用的稳定指向，避免默认空对象每次重新创建导致无限循环重渲染
+  const globalExcludedRef = useRef(globalExcluded);
+  globalExcludedRef.current = globalExcluded;
+  const modelsListRef = useRef(modelsList);
+  modelsListRef.current = modelsList;
+  const modelDefinitionsRef = useRef(modelDefinitions);
+  modelDefinitionsRef.current = modelDefinitions;
+  const requestScopeRef = useRef(requestScope);
+  requestScopeRef.current = requestScope;
+
   // 动态拉取该认证文件支持的真实可用模型列表 (复用系统已有模型支持列表方法)
   const loadDynamicModels = useCallback(async () => {
     if (!row) return [];
     setModelsLoading(true);
     try {
-      const items = await fetchAuthFileSupportedModels(row, requestScope, globalExcluded, {
-        modelsList,
-        modelDefinitions,
-      });
+      const items = await fetchAuthFileSupportedModels(
+        row,
+        requestScopeRef.current,
+        globalExcludedRef.current,
+        {
+          modelsList: modelsListRef.current,
+          modelDefinitions: modelDefinitionsRef.current,
+        }
+      );
       setDynamicModels(items);
       return items;
     } catch {
@@ -164,7 +182,7 @@ export function AccountWarmupModal({
     } finally {
       setModelsLoading(false);
     }
-  }, [row, requestScope, globalExcluded, modelsList, modelDefinitions]);
+  }, [row]);
 
   // 主动刷新凭证模型列表并即时联动更新当前选中模型
   const handleRefreshModels = useCallback(async () => {
