@@ -24,6 +24,7 @@ import {
   IconRotateCcw,
   IconTriangleAlert,
   IconX,
+} from '@/components/ui/icons';
 import type { AuthFilesApiRequestScope } from '@/services/api';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
