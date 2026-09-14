@@ -76,11 +76,13 @@ vi.mock('@/components/ui/AutocompleteInput', () => ({
 }));
 
 // 模拟远程模型 API
-export const mockGetModelsForAuthFile = vi.fn().mockResolvedValue([
-  { id: 'gpt-5.5', name: 'GPT-5.5' },
-  { id: 'pqq/gpt-5.5', name: 'PQQ GPT-5.5' },
-  { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
-]);
+const { mockGetModelsForAuthFile } = vi.hoisted(() => ({
+  mockGetModelsForAuthFile: vi.fn().mockResolvedValue([
+    { id: 'gpt-5.5', name: 'GPT-5.5' },
+    { id: 'pqq/gpt-5.5', name: 'PQQ GPT-5.5' },
+    { id: 'gpt-6-astra', name: 'GPT-6 Astra' },
+  ]),
+}));
 
 vi.mock('@/services/api', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();

@@ -182,9 +182,13 @@ export function getDefaultWarmupModel(
   dynamicModels?: Array<{ id: string; name?: string }>,
   options?: WarmupCandidateModelsOptions
 ): string {
-  const candidates = getWarmupCandidateModels(provider, dynamicModels, options);
-  if (candidates.length > 0) {
-    return candidates[0];
+  const normalized = String(provider || '').trim().toLowerCase();
+  // 若有动态模型或显式配置的已知 provider，使用候选列表首项
+  if ((dynamicModels && dynamicModels.length > 0) || DEFAULT_WARMUP_MODELS_BY_PROVIDER[normalized]) {
+    const candidates = getWarmupCandidateModels(provider, dynamicModels, options);
+    if (candidates.length > 0) {
+      return candidates[0];
+    }
   }
   return 'gpt-4o-mini';
 }
