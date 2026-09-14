@@ -554,11 +554,11 @@ describe('accountWarmup model', () => {
 
       const models = await fetchAuthFileSupportedModels(row, undefined, {}, {
         modelsList: [
-          { id: 'runtime-model-1', name: 'Runtime Model 1' },
-          { id: 'declared-model-2', name: 'Excluded Model' },
+          { id: 'runtime-model-1', display_name: 'Runtime Model 1' },
+          { id: 'declared-model-2', display_name: 'Excluded Model' },
         ],
         modelDefinitions: [
-          { id: 'definition-model-1', name: 'Def Model 1' },
+          { id: 'definition-model-1', display_name: 'Def Model 1' },
         ],
       });
 
