@@ -134,9 +134,12 @@ export const DEFAULT_WARMUP_MODELS_BY_PROVIDER: Record<string, string[]> = {
  * 从凭据行或 AuthFileItem 提取排除模型列表 (excluded-models)
  */
 export function extractExcludedModelsFromRow(rowOrFile?: AccountRow | AuthFileItem | null): string[] {
-  if (!rowOrFile) return [];
-  const raw = ('raw' in rowOrFile && rowOrFile.raw) ? rowOrFile.raw : (rowOrFile as AuthFileItem);
-  const excluded = raw['excluded-models'] ?? raw.excludedModels ?? raw.excluded_models;
+  if (!rowOrFile || typeof rowOrFile !== 'object') return [];
+  const rawRecord = ('raw' in rowOrFile && rowOrFile.raw
+    ? rowOrFile.raw
+    : rowOrFile) as Record<string, unknown> | null | undefined;
+  if (!rawRecord) return [];
+  const excluded = rawRecord['excluded-models'] ?? rawRecord.excludedModels ?? rawRecord.excluded_models;
   if (Array.isArray(excluded)) {
     return normalizeExcludedModels(excluded.map(String));
   }
@@ -150,9 +153,11 @@ export function extractExcludedModelsFromRow(rowOrFile?: AccountRow | AuthFileIt
  * 从凭据行或 AuthFileItem 提取前缀 (prefix)
  */
 export function extractPrefixFromRow(rowOrFile?: AccountRow | AuthFileItem | null): string {
-  if (!rowOrFile) return '';
-  const raw = ('raw' in rowOrFile && rowOrFile.raw) ? rowOrFile.raw : (rowOrFile as AuthFileItem);
-  const prefix = raw.prefix;
+  if (!rowOrFile || typeof rowOrFile !== 'object') return [];
+  const rawRecord = ('raw' in rowOrFile && rowOrFile.raw
+    ? rowOrFile.raw
+    : rowOrFile) as Record<string, unknown> | null | undefined;
+  const prefix = rawRecord?.prefix;
   return typeof prefix === 'string' ? prefix.trim().replace(/\/+$/g, '') : '';
 }
 

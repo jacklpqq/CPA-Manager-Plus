@@ -394,7 +394,11 @@ describe('AccountWarmupModal', () => {
       },
     });
 
-    const mockRequestScope = { connectionKey: 'conn-1' };
+    const mockRequestScope: AccountWarmupModalProps['requestScope'] = {
+      apiBase: 'https://api.example.com',
+      managementKey: 'test-management-key',
+      connectionKey: 'conn-1',
+    };
     let renderer!: ReactTestRenderer;
 
     await act(async () => {
