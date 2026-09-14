@@ -196,6 +196,7 @@ describe('accountWarmup model', () => {
           limitWindowSeconds: 86400,
           resetAtMs: now + 50000,
           fromMs: now,
+          toMs: now + 50000,
         },
         {
           key: 'five-hour-win',
@@ -208,6 +209,7 @@ describe('accountWarmup model', () => {
           limitWindowSeconds: 18000,
           resetAtMs: now + 30000,
           fromMs: now,
+          toMs: now + 30000,
         },
       ];
 
@@ -234,6 +236,7 @@ describe('accountWarmup model', () => {
           limitWindowSeconds: 604800,
           resetAtMs: now + 200000,
           fromMs: now,
+          toMs: now + 200000,
         },
         {
           key: 'near-win',
@@ -246,6 +249,7 @@ describe('accountWarmup model', () => {
           limitWindowSeconds: 86400,
           resetAtMs: now + 40000,
           fromMs: now,
+          toMs: now + 40000,
         },
       ];
 
@@ -311,6 +315,7 @@ describe('accountWarmup model', () => {
           limitWindowSeconds: 18000,
           resetAtMs: now - 30000,
           fromMs: now - 18000000,
+          toMs: now - 30000,
         },
       ];
 

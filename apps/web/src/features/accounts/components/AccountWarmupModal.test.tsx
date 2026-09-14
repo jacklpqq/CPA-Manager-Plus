@@ -99,6 +99,7 @@ const mockQuotaWindows: AccountQuotaDisplayWindow[] = [
     limitWindowSeconds: 18000,
     resetAtMs: 1700003600000,
     fromMs: 1700000000000,
+    toMs: 1700003600000,
   },
 ];
 

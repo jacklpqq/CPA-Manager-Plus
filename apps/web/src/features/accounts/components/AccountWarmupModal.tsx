@@ -36,7 +36,6 @@ import {
   saveWarmupPrompt,
   type AccountWarmupConfig,
   type AccountWarmupMode,
-  type AccountWarmupRecord,
   type InferredWarmupTimeResult,
   type WarmupExecutionResult,
 } from '../model/accountWarmup';
@@ -462,15 +461,16 @@ export function AccountWarmupModal({
             <div className={styles.scheduleCard}>
               {/* 模式选择 */}
               <SegmentedTabs
-                value={mode}
-                onChange={(val) => setMode(val as AccountWarmupMode)}
-                options={[
+                activeTab={mode}
+                onChange={(tab) => setMode(tab as AccountWarmupMode)}
+                ariaLabel={t('accounts.warmup_mode_label')}
+                items={[
                   {
-                    value: 'inferred',
+                    id: 'inferred',
                     label: t('accounts.warmup_mode_inferred'),
                   },
                   {
-                    value: 'interval',
+                    id: 'interval',
                     label: t('accounts.warmup_mode_interval'),
                   },
                 ]}

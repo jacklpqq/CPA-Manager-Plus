@@ -201,6 +201,7 @@ describe('useAccountWarmupScheduler', () => {
         limitWindowSeconds: 18000,
         resetAtMs: 1700007200000,
         fromMs: 1700000000000,
+        toMs: 1700007200000,
       },
     ];
 
@@ -212,15 +213,15 @@ describe('useAccountWarmupScheduler', () => {
       quotaDisplayWindowsByRowKey: quotaMap,
     });
 
-    let reinferred: accountWarmupModel.InferredWarmupTimeResult | null = null;
+    let reinferred!: accountWarmupModel.InferredWarmupTimeResult;
     await act(async () => {
       reinferred = await latest!.refreshAndReinfer(row, 10);
       await Promise.resolve();
     });
 
     expect(refreshAccountQuota).toHaveBeenCalledWith(row);
-    expect(reinferred?.nextWarmupAtMs).toBe(1700007200000 + 10000);
-    expect(reinferred?.isFuture).toBe(true);
+    expect(reinferred.nextWarmupAtMs).toBe(1700007200000 + 10000);
+    expect(reinferred.isFuture).toBe(true);
   });
 
   it('hydrates scheduled state from localStorage for existing accounts', async () => {
@@ -247,7 +248,7 @@ describe('useAccountWarmupScheduler', () => {
 
   it('triggers scheduled warmup on timer tick and prevents infinite past-time loops', async () => {
     const row = makeMockRow({ selectionKey: 'timer-acc' });
-    const inferSpy = vi.spyOn(accountWarmupModel, 'executeWarmupInference').mockResolvedValue({
+    vi.spyOn(accountWarmupModel, 'executeWarmupInference').mockResolvedValue({
       success: true,
       statusCode: 200,
       durationMs: 100,
