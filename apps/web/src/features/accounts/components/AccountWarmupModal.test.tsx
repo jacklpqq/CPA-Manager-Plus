@@ -5,7 +5,7 @@
 
 import { act, type ReactNode } from 'react';
 import { create, type ReactTestRenderer } from 'react-test-renderer';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
 import type { AccountRow } from '../model/accountRows';
 import { DEFAULT_WARMUP_PROMPT } from '../model/accountWarmup';
@@ -103,14 +103,47 @@ const mockQuotaWindows: AccountQuotaDisplayWindow[] = [
   },
 ];
 
+/**
+ * 内存 Storage 模拟实现，供单元测试在 Node 环境中运行 localStorage 读写
+ */
+const createMemoryStorage = () => {
+  const store = new Map<string, string>();
+  return {
+    getItem: (key: string) => (store.has(key) ? (store.get(key) as string) : null),
+    setItem: (key: string, value: string) => {
+      store.set(key, value);
+    },
+    removeItem: (key: string) => {
+      store.delete(key);
+    },
+    clear: () => {
+      store.clear();
+    },
+    get length() {
+      return store.size;
+    },
+    key: (index: number) => Array.from(store.keys())[index] ?? null,
+  };
+};
+
 describe('AccountWarmupModal', () => {
   let mockScheduler: AccountWarmupModalProps['scheduler'];
   let onClose: () => void;
 
   beforeEach(() => {
-    localStorage.clear();
+    const storage = createMemoryStorage();
+    vi.stubGlobal('localStorage', storage);
+    vi.stubGlobal('window', {
+      ...(typeof window !== 'undefined' ? window : {}),
+      localStorage: storage,
+    });
     vi.clearAllMocks();
     onClose = vi.fn();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
 
     mockScheduler = {
       getWarmupState: vi.fn().mockReturnValue({
