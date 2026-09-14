@@ -139,11 +139,6 @@ describe('AccountWarmupModal', () => {
     });
     vi.clearAllMocks();
     onClose = vi.fn();
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-  });
 
     mockScheduler = {
       getWarmupState: vi.fn().mockReturnValue({
@@ -174,6 +169,10 @@ describe('AccountWarmupModal', () => {
         isFuture: true,
       }),
     };
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('renders modal when open is true with default prompt value', async () => {
