@@ -1,0 +1,225 @@
+# ==============================================================================
+# 工作流名称：Docker ARM 架构与多架构构建工作流
+# 功能说明：
+#   1. 支持按需手动触发（workflow_dispatch），也可在分支有代码更新时触发构建。
+#   2. 默认针对 ARM64 架构（linux/arm64）构建，并支持多架构（linux/amd64,linux/arm64）。
+#   3. 构建产物自动推送到 GitHub Container Registry (GHCR)，方便 ARM 设备直接拉取：
+#      docker pull ghcr.io/<owner>/cpa-manager-plus:<tag>
+#   4. 支持将构建好的镜像导出为 .tar 归档文件并作为 GitHub Actions 制品上传，供离线直接使用。
+# ==============================================================================
+
+name: Docker Build (ARM & Multi-Arch)
+
+# 触发器配置
+on:
+  # 支持在 GitHub Actions 控制台手动输入参数触发
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '目标构建架构（默认 linux/arm64，适合树莓派、ARM NAS、Apple Silicon 等）'
+        required: true
+        default: 'linux/arm64'
+        type: choice
+        options:
+          - 'linux/arm64'
+          - 'linux/amd64,linux/arm64'
+          - 'linux/amd64'
+      image_tag:
+        description: '发布到 GHCR 的镜像标签 Tag（例如 latest、dev、arm64 等）'
+        required: true
+        default: 'latest'
+        type: string
+      push_image:
+        description: '是否将构建的镜像自动推送到 GHCR 容器仓库'
+        required: true
+        default: true
+        type: boolean
+      export_tar:
+        description: '是否导出镜像压缩包为 Workflow 制品（用于离线下载导入）'
+        required: true
+        default: true
+        type: boolean
+
+  # 当向指定开发分支推送 Dockerfile 或工作流文件变更时也可自动验证构建
+  push:
+    branches:
+      - feat/docker-arm64-build
+    paths:
+      - 'Dockerfile.manager-server'
+      - '.github/workflows/docker-build.yml'
+
+# 权限控制：拉取代码与写入 GitHub Packages (GHCR)
+permissions:
+  contents: read
+  packages: write
+
+# 并发控制：同一个分支同一时间只保留一个运行实例，避免重复构建争抢资源
+concurrency:
+  group: docker-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build_docker_image:
+    name: Build Docker Image (${{ inputs.platforms || 'linux/arm64' }})
+    runs-on: ubuntu-latest
+
+    steps:
+      # 第一步：检出 Git 仓库代码
+      - name: Checkout repository source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      # 第二步：安装并配置 QEMU 模拟器
+      # 作用：在 x86_64 Runner 上通过仿真执行非原生（如 ARM64）架构指令
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      # 第三步：安装并配置 Docker Buildx
+      # 作用：开启 BuildKit 高级多架构构建器能力
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      # 第四步：解析并准备镜像元数据与标签
+      - name: Prepare Image Metadata
+        id: meta
+        shell: bash
+        env:
+          DEFAULT_PLATFORM: 'linux/arm64'
+          DEFAULT_TAG: 'latest'
+          DEFAULT_PUSH: 'true'
+          DEFAULT_EXPORT: 'true'
+        run: |
+          set -euo pipefail
+
+          # 处理输入参数（如果是 push 触发则读取默认值）
+          platforms="${{ inputs.platforms }}"
+          [ -z "${platforms}" ] && platforms="${DEFAULT_PLATFORM}"
+
+          image_tag="${{ inputs.image_tag }}"
+          [ -z "${image_tag}" ] && image_tag="${DEFAULT_TAG}"
+
+          push_image="${{ inputs.push_image }}"
+          [ -z "${push_image}" ] && push_image="${DEFAULT_PUSH}"
+
+          export_tar="${{ inputs.export_tar }}"
+          [ -z "${export_tar}" ] && export_tar="${DEFAULT_EXPORT}"
+
+          # 统一将镜像所有者转换为小写，符合 Docker / OCI 规范
+          owner_lowercase="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
+          image_repo="ghcr.io/${owner_lowercase}/cpa-manager-plus"
+          short_sha="$(echo "${{ github.sha }}" | cut -c1-7)"
+
+          tags="${image_repo}:${image_tag}"
+          # 如果标签不是 git sha，同时附加一个 sha 标签以方便版本追溯
+          if [ "${image_tag}" != "${short_sha}" ]; then
+            tags="${tags},${image_repo}:${short_sha}"
+          fi
+
+          echo "platforms=${platforms}" >> "${GITHUB_OUTPUT}"
+          echo "image_tag=${image_tag}" >> "${GITHUB_OUTPUT}"
+          echo "image_repo=${image_repo}" >> "${GITHUB_OUTPUT}"
+          echo "tags=${tags}" >> "${GITHUB_OUTPUT}"
+          echo "push_image=${push_image}" >> "${GITHUB_OUTPUT}"
+          echo "export_tar=${export_tar}" >> "${GITHUB_OUTPUT}"
+          echo "short_sha=${short_sha}" >> "${GITHUB_OUTPUT}"
+
+      # 第五步：登录 GitHub Container Registry (GHCR)
+      # 作用：获取向 ghcr.io 推送镜像的鉴权
+      - name: Login to GitHub Container Registry
+        if: steps.meta.outputs.push_image == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # 第六步：构建多架构/ARM Docker 镜像并推送至 GHCR
+      - name: Build and push Docker image
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: Dockerfile.manager-server
+          platforms: ${{ steps.meta.outputs.platforms }}
+          push: ${{ steps.meta.outputs.push_image == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.image_tag }}
+            SOURCE_COMMIT=${{ github.sha }}
+
+      # 第七步（可选）：构建并导出单架构（如 ARM64）离线镜像归档文件
+      # 仅在需要离线分发或不想配置远程镜像仓库拉取时使用
+      - name: Export offline Docker image tarball
+        if: steps.meta.outputs.export_tar == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/docker-artifacts
+
+          # 如果指定了多个架构，提取第一个架构用于导出离线包（例如 linux/arm64）
+          export_platform="$(echo "${{ steps.meta.outputs.platforms }}" | cut -d',' -f1)"
+          tar_name="cpa-manager-plus-${export_platform//\//_}-${{ steps.meta.outputs.image_tag }}.tar"
+          tar_path="dist/docker-artifacts/${tar_name}"
+
+          echo "正在导出离线镜像文件 (${export_platform}) 到 ${tar_path}..."
+
+          # 使用 docker buildx 构建为本地 docker 归档格式
+          docker buildx build \
+            --platform "${export_platform}" \
+            --file Dockerfile.manager-server \
+            --build-arg VERSION="${{ steps.meta.outputs.image_tag }}" \
+            --build-arg SOURCE_COMMIT="${{ github.sha }}" \
+            --tag "cpa-manager-plus:${{ steps.meta.outputs.image_tag }}" \
+            --output "type=docker,dest=${tar_path}" \
+            .
+
+          echo "离线归档导出成功，文件大小："
+          ls -lh "${tar_path}"
+          gzip -k "${tar_path}"
+
+      # 第八步（可选）：将离线镜像归档上传为 GitHub Actions Artifact
+      - name: Upload offline Docker image artifact
+        if: steps.meta.outputs.export_tar == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cpa-manager-plus-${{ steps.meta.outputs.image_tag }}-docker-image
+          path: dist/docker-artifacts/*.tar*
+          if-no-files-found: warn
+          retention-days: 7
+
+      # 第九步：在 GitHub Actions Summary 生成详细的使用说明
+      - name: Output Deployment Summary
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## 🚀 Docker ARM 架构镜像构建成功"
+            echo ""
+            echo "### 镜像信息"
+            echo "- **构建架构**：\`${{ steps.meta.outputs.platforms }}\`"
+            echo "- **镜像版本**：\`${{ steps.meta.outputs.image_tag }}\`"
+            echo "- **Commit SHA**：\`${{ steps.meta.outputs.short_sha }}\`"
+            if [ "${{ steps.meta.outputs.push_image }}" = "true" ]; then
+              echo "- **GHCR 镜像地址**："
+              echo "  - \`${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.image_tag }}\`"
+              echo "  - \`${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.short_sha }}\`"
+              echo ""
+              echo "### 在 ARM 设备上运行容器"
+              echo "\`\`\`bash"
+              echo "docker run -d \\"
+              echo "  --name cpa-manager-plus \\"
+              echo "  --restart unless-stopped \\"
+              echo "  -p 18317:18317 \\"
+              echo "  -v cpa-manager-plus-data:/data \\"
+              echo "  ${{ steps.meta.outputs.image_repo }}:${{ steps.meta.outputs.image_tag }}"
+              echo "\`\`\`"
+            fi
+            if [ "${{ steps.meta.outputs.export_tar }}" = "true" ]; then
+              echo ""
+              echo "### 离线安装方式"
+              echo "可在本运行页面的 **Artifacts** 区域直接下载离线镜像包，解压后在设备执行："
+              echo "\`\`\`bash"
+              echo "docker load -i cpa-manager-plus-*.tar"
+              echo "\`\`\`"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
