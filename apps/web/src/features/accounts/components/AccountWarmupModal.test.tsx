@@ -8,8 +8,26 @@ import { create, type ReactTestRenderer } from 'react-test-renderer';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
 import type { AccountRow } from '../model/accountRows';
+import { Button } from '@/components/ui/Button';
 import { DEFAULT_WARMUP_PROMPT } from '../model/accountWarmup';
 import { AccountWarmupModal, type AccountWarmupModalProps } from './AccountWarmupModal';
+
+/**
+ * 辅助函数：根据包含的翻译键文本递归检索目标 Button 实例
+ */
+const findButtonByText = (root: ReactTestRenderer['root'], targetText: string) => {
+  const checkValue = (val: unknown): boolean => {
+    if (typeof val === 'string') return val.includes(targetText);
+    if (Array.isArray(val)) return val.some(checkValue);
+    if (val && typeof val === 'object' && 'props' in val) {
+      return checkValue((val as { props?: { children?: unknown } }).props?.children);
+    }
+    return false;
+  };
+
+  const buttons = root.findAllByType(Button);
+  return buttons.find((b) => checkValue(b.props.children));
+};
 
 // 模拟 react-i18next
 vi.mock('react-i18next', () => ({
@@ -291,21 +309,11 @@ describe('AccountWarmupModal', () => {
     });
 
     // 查找“立即预热”按钮 (包含 accounts.warmup_now_button 文本)
-    const buttons = renderer.root.findAllByType('button');
-    const runButton = buttons.find((b) => {
-      const children = b.props.children;
-      if (typeof children === 'string') return children.includes('accounts.warmup_now_button');
-      if (Array.isArray(children)) {
-        return children.some(
-          (c) => typeof c === 'string' && c.includes('accounts.warmup_now_button')
-        );
-      }
-      return false;
-    });
+    const runButton = findButtonByText(renderer.root, 'accounts.warmup_now_button');
     expect(runButton).toBeDefined();
 
     await act(async () => {
-      await runButton!.props.onClick();
+      await runButton!.props.onClick?.();
       await Promise.resolve();
     });
 
@@ -336,25 +344,11 @@ describe('AccountWarmupModal', () => {
     });
 
     // 查找“刷新额度并重新推断”按钮 (包含 accounts.warmup_inferred_refresh_recalculate 文本)
-    const buttons = renderer.root.findAllByType('button');
-    const reinferButton = buttons.find((b) => {
-      const children = b.props.children;
-      if (typeof children === 'string') {
-        return children.includes('accounts.warmup_inferred_refresh_recalculate');
-      }
-      if (Array.isArray(children)) {
-        return children.some(
-          (c) =>
-            typeof c === 'string' &&
-            c.includes('accounts.warmup_inferred_refresh_recalculate')
-        );
-      }
-      return false;
-    });
+    const reinferButton = findButtonByText(renderer.root, 'accounts.warmup_inferred_refresh_recalculate');
     expect(reinferButton).toBeDefined();
 
     await act(async () => {
-      await reinferButton!.props.onClick();
+      await reinferButton!.props.onClick?.();
       await Promise.resolve();
     });
 
