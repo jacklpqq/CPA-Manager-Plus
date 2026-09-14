@@ -290,7 +290,7 @@ describe('accountWarmup model', () => {
           usedPercent: 0,
           resetLabel: '',
           resetAtMs: null,
-          resetAccuracy: 'none',
+          resetAccuracy: 'unknown',
           planType: null,
           source: 'none',
         },
