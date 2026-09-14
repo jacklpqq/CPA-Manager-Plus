@@ -4,7 +4,7 @@
  * 代码即文档：具备详尽的中文注解与全套类型定义
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useNotificationStore } from '@/stores';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
@@ -75,22 +75,23 @@ export function useAccountWarmupScheduler({
   // 凭据预热运行时状态缓存映射表 (key: selectionKey)
   const [runtimeStates, setRuntimeStates] = useState<Record<string, AccountWarmupRuntimeState>>({});
   const runtimeStatesRef = useRef<Record<string, AccountWarmupRuntimeState>>({});
-  runtimeStatesRef.current = runtimeStates;
 
   // 保持当前 rows 和 windows 的最新引用，避免定时器闭包过旧
   const rowsRef = useRef<AccountRow[]>(rows);
-  rowsRef.current = rows;
-
   const windowsByRowKeyRef = useRef<Map<string, AccountQuotaDisplayWindow[]> | undefined>(
     quotaDisplayWindowsByRowKey
   );
-  windowsByRowKeyRef.current = quotaDisplayWindowsByRowKey;
-
   const getQuotaWindowsRef = useRef(getQuotaWindows);
-  getQuotaWindowsRef.current = getQuotaWindows;
-
   const refreshAccountQuotaRef = useRef(refreshAccountQuota);
-  refreshAccountQuotaRef.current = refreshAccountQuota;
+
+  // 在 useLayoutEffect 中同步更新 ref，避免在渲染阶段直接修改 ref 违反 react-hooks/refs 规范
+  useLayoutEffect(() => {
+    runtimeStatesRef.current = runtimeStates;
+    rowsRef.current = rows;
+    windowsByRowKeyRef.current = quotaDisplayWindowsByRowKey;
+    getQuotaWindowsRef.current = getQuotaWindows;
+    refreshAccountQuotaRef.current = refreshAccountQuota;
+  });
 
   /**
    * 辅助函数：安全解析凭据对应的额度窗口列表（优先使用动态函数，避免分页缺失）
@@ -509,7 +510,7 @@ export function useAccountWarmupScheduler({
                 }),
                 res.success ? 'info' : 'warning'
               );
-            } catch (err: unknown) {
+            } catch {
               setRuntimeStates((prev) => {
                 const updated = {
                   ...prev,
