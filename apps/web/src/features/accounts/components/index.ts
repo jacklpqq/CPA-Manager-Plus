@@ -25,3 +25,6 @@ export {
   AccountOverviewTab,
   AccountQuotaTab,
 } from './accountDetail';
+
+export { AccountWarmupModal } from './AccountWarmupModal';
+

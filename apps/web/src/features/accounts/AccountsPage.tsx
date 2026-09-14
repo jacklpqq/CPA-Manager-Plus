@@ -31,6 +31,7 @@ import {
   IconEye,
   IconEyeOff,
   IconFileText,
+  IconFlame,
   IconKey,
   IconMoreVertical,
   IconModelCluster,
@@ -294,8 +295,10 @@ import {
   AccountOverviewTab,
   AccountProviderTabs,
   AccountQuotaTab,
+  AccountWarmupModal,
   AccountsBatchDeletePreview,
 } from '@/features/accounts/components';
+import { useAccountWarmupScheduler } from '@/features/accounts/hooks/useAccountWarmupScheduler';
 import {
   accountQuotaSnapshotApi,
   authFilesApi,
@@ -6529,6 +6532,13 @@ export function AccountsPage() {
   const isManualQuotaRefreshing = (row: AccountRow): boolean =>
     manualQuotaRefreshingKeys.has(getAccountQuotaRefreshKey(row));
 
+  const [warmupTargetRow, setWarmupTargetRow] = useState<AccountRow | null>(null);
+  const warmupScheduler = useAccountWarmupScheduler({
+    rows,
+    refreshAccountQuota,
+    quotaDisplayWindowsByRowKey,
+  });
+
   const refreshAccountHistory = useCallback(
     (row: AccountRow): Promise<void> => {
       if (!requestHistoryAvailable) return Promise.resolve();
@@ -8094,6 +8104,31 @@ export function AccountsPage() {
       </Button>
     ) : null;
 
+    const isWarmupScheduled = warmupScheduler.isWarmupScheduled(row.selectionKey);
+    const isWarmupRunning = warmupScheduler.isWarmupRunning(row.selectionKey);
+
+    const warmupButton = (
+      <Button
+        variant="secondary"
+        size="sm"
+        iconOnly
+        className={`${styles.accountIconButton} ${styles.accountIconButtonWarmup} ${
+          isWarmupScheduled ? styles.accountIconButtonWarmupActive : ''
+        }`}
+        onClick={() => setWarmupTargetRow(row)}
+        disabled={disableControls || row.runtimeOnly}
+        loading={isWarmupRunning}
+        title={
+          isWarmupScheduled
+            ? `${t('accounts.warmup_action')} (${t('accounts.warmup_active_badge')})`
+            : t('accounts.warmup_action')
+        }
+        aria-label={t('accounts.warmup_action')}
+      >
+        {!isWarmupRunning ? <IconFlame size={15} /> : null}
+      </Button>
+    );
+
     const refreshButton = (
       <Button
         variant="secondary"
@@ -8194,6 +8229,7 @@ export function AccountsPage() {
             {downloadButton}
           </div>
           <div className={styles.accountGridCardPrimaryActions}>
+            {warmupButton}
             {refreshButton}
             {modelsButton}
             {settingsButton}
@@ -8207,6 +8243,7 @@ export function AccountsPage() {
       <div className={styles.rowActions} onClick={(event) => event.stopPropagation()}>
         <div className={styles.accountQuickActionsGrid}>
           {reauthButton}
+          {warmupButton}
           {refreshButton}
           {settingsButton}
           {modelsButton}
@@ -9603,6 +9640,15 @@ export function AccountsPage() {
     const selectedQuotaRefreshing = isManualQuotaRefreshing(selectedRow);
     const drawerMoreItems: DropdownMenuItem[] = [
       {
+        key: 'warmup',
+        label: t('accounts.warmup_action'),
+        icon: <IconFlame size={15} />,
+        onClick: () => {
+          setWarmupTargetRow(selectedRow);
+        },
+        disabled: selectedRow.runtimeOnly,
+      },
+      {
         key: 'models',
         label: t('auth_files.models_button'),
         icon: <IconModelCluster size={15} />,
@@ -10118,6 +10164,15 @@ export function AccountsPage() {
           setCodexReauthTarget(null);
         }}
         onSuccess={handleCodexReauthSuccess}
+      />
+      <AccountWarmupModal
+        open={warmupTargetRow !== null}
+        row={warmupTargetRow}
+        onClose={() => setWarmupTargetRow(null)}
+        quotaWindows={
+          warmupTargetRow ? quotaDisplayWindowsByRowKey.get(warmupTargetRow.selectionKey) : undefined
+        }
+        scheduler={warmupScheduler}
       />
     </div>
   );
