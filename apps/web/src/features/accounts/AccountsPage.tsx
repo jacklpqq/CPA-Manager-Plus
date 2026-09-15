@@ -10194,9 +10194,7 @@ export function AccountsPage() {
           warmupTargetRow ? getWarmupQuotaWindows(warmupTargetRow) : undefined
         }
         requestScope={authFilesRequestScope}
-        modelsList={
-          modelsSelectionKey === warmupTargetRow?.selectionKey ? modelsList : undefined
-        }
+        modelsList={modelsList}
         modelDefinitions={modelDefinitions}
         globalExcluded={oauthState.excluded}
         onRefreshModels={refreshModels}

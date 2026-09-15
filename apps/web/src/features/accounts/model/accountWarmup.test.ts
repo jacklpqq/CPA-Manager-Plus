@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiCallApi } from '@/services/api/apiCall';
+import { useConfigStore } from '@/stores/useConfigStore';
 import type { AccountQuotaDisplayWindow } from './accountQuotaDisplayWindows';
 import type { AccountRow } from './accountRows';
 import {
@@ -24,6 +25,7 @@ import {
   loadWarmupHistory,
   loadWarmupPrompt,
   parseTimeToMinutes,
+  resolveCpaApiKey,
   saveAccountWarmupConfig,
   saveWarmupPrompt,
   saveWarmupRecord,
@@ -124,7 +126,7 @@ describe('accountWarmup model', () => {
     });
 
     it('returns sensible default models by provider when dynamic list is empty', () => {
-      expect(getDefaultWarmupModel('codex')).toBe('gpt-5-codex');
+      expect(getDefaultWarmupModel('codex')).toBe('gpt-5.5');
       expect(getDefaultWarmupModel('claude')).toBe('claude-3-7-sonnet-20250219');
       expect(getDefaultWarmupModel('gemini')).toBe('gemini-2.5-pro');
       expect(getDefaultWarmupModel('xai')).toBe('grok-4');
@@ -144,13 +146,24 @@ describe('accountWarmup model', () => {
       expect(candidates).not.toContain('gpt-5-codex'); // 没有注入写死模型
     });
 
-    it('supports credential prefix and complements prefixed model options', () => {
+    it('supports credential prefix and complements prefixed model options with priority', () => {
       const dynamic = [{ id: 'gpt-5.5' }, { id: 'gpt-6-astra' }];
       const candidates = getWarmupCandidateModels('codex', dynamic, { prefix: 'pqq' });
-      expect(candidates).toContain('gpt-5.5');
-      expect(candidates).toContain('pqq/gpt-5.5');
-      expect(candidates).toContain('gpt-6-astra');
-      expect(candidates).toContain('pqq/gpt-6-astra');
+      expect(candidates).toEqual(['pqq/gpt-5.5', 'pqq/gpt-6-astra']);
+      expect(candidates[0]).toBe('pqq/gpt-5.5');
+    });
+
+    it('strictly filters out models with other account prefixes and keeps current prefix first', () => {
+      const dynamic = [
+        { id: 'pqq/gpt-5.5' },
+        { id: 'p390/gpt-5.5' },
+        { id: 'gpt-6-astra' },
+      ];
+      // 当前凭据为 p390，绝不能包含 pqq/ 的模型，且自身专属前缀模型排在最前
+      const candidates = getWarmupCandidateModels('codex', dynamic, { prefix: 'p390' });
+      expect(candidates[0]).toBe('p390/gpt-5.5');
+      expect(candidates).toContain('p390/gpt-6-astra');
+      expect(candidates).not.toContain('pqq/gpt-5.5');
     });
 
     it('filters out excluded models configured on credential', () => {
@@ -188,30 +201,25 @@ describe('accountWarmup model', () => {
       expect(getDefaultWarmupEndpoint(row)).toBe('https://custom-gateway.example/v1/chat/completions');
     });
 
-    it('resolves default endpoints by provider', () => {
+    it('resolves default standard CPA endpoint for all providers', () => {
       expect(getDefaultWarmupEndpoint(makeMockRow({ provider: 'claude' }))).toBe(
-        'https://api.anthropic.com/v1/messages'
+        'http://127.0.0.1:8317/v1/chat/completions'
       );
       expect(getDefaultWarmupEndpoint(makeMockRow({ provider: 'gemini' }))).toBe(
-        'https://generativelanguage.googleapis.com/v1beta/chat/completions'
+        'http://127.0.0.1:8317/v1/chat/completions'
       );
       expect(getDefaultWarmupEndpoint(makeMockRow({ provider: 'xai' }))).toBe(
-        'https://cli-chat-proxy.grok.com/v1/responses'
+        'http://127.0.0.1:8317/v1/chat/completions'
       );
       expect(getDefaultWarmupEndpoint(makeMockRow({ provider: 'codex' }))).toBe(
-        'https://api.openai.com/v1/responses'
+        'http://127.0.0.1:8317/v1/chat/completions'
       );
     });
 
-    it('builds codex responses endpoint properly when custom baseUrl is provided', () => {
-      const row = makeMockRow({
-        provider: 'codex',
-        raw: {
-          name: 'codex.json',
-          baseUrl: 'https://codex-proxy.example.com/v1',
-        },
-      });
-      expect(getDefaultWarmupEndpoint(row)).toBe('https://codex-proxy.example.com/v1/responses');
+    it('uses explicit apiBase when provided', () => {
+      expect(getDefaultWarmupEndpoint(null, 'http://192.168.1.50:8317')).toBe(
+        'http://192.168.1.50:8317/v1/chat/completions'
+      );
     });
   });
 
@@ -481,64 +489,57 @@ describe('accountWarmup model', () => {
   });
 
   describe('buildWarmupPayload', () => {
-    it('builds Claude messages payload with anthropic headers', () => {
-      const result = buildWarmupPayload(
-        'claude',
-        'https://api.anthropic.com/v1/messages',
-        'claude-3-7-sonnet-20250219',
-        'ping',
-        16
-      );
-
-      expect(result.header['x-api-key']).toBe('$TOKEN$');
-      expect(result.header['anthropic-version']).toBe('2023-06-01');
-      const data = JSON.parse(result.data);
-      expect(data.model).toBe('claude-3-7-sonnet-20250219');
-      expect(data.messages[0].content).toBe('ping');
-      expect(data.max_tokens).toBe(16);
-    });
-
-    it('builds OpenAI chat completions payload for openai provider', () => {
-      const result = buildWarmupPayload(
-        'openai',
-        'https://api.openai.com/v1/chat/completions',
-        'gpt-4o',
-        'ping',
-        16
-      );
-
-      expect(result.header.Authorization).toBe('Bearer $TOKEN$');
-      const data = JSON.parse(result.data);
-      expect(data.model).toBe('gpt-4o');
-      expect(data.messages[0].content).toBe('ping');
-      expect(data.max_tokens).toBe(16);
-    });
-
-    it('builds Codex responses payload with codex-tui headers and strips prefix', () => {
+    it('builds standard chat completions payload with session affinity and prefix routing', () => {
       const row = makeMockRow({
         raw: {
-          name: 'pqq.json',
-          prefix: 'pqq',
-          chatgpt_account_id: 'acc-uuid-1234',
+          name: 'p390.json',
+          prefix: 'p390',
         },
       });
 
       const result = buildWarmupPayload(
         'codex',
-        'https://api.openai.com/v1/responses',
-        'pqq/gpt-5.5',
+        'http://127.0.0.1:8317/v1/chat/completions',
+        'gpt-5.5',
         'ping',
         16,
-        row
+        row,
+        'test-cpa-key'
       );
 
-      expect(result.header['User-Agent']).toContain('codex-tui');
-      expect(result.header['OpenAI-Beta']).toBe('codex-1');
-      expect(result.header['Chatgpt-Account-Id']).toBe('acc-uuid-1234');
+      expect(result.header['Content-Type']).toBe('application/json');
+      expect(result.header['Authorization']).toBe('Bearer test-cpa-key');
+      expect(result.header['X-Session-ID']).toBeDefined();
+      expect(result.header['X-Session-Affinity']).toBe(result.header['X-Session-ID']);
+
       const data = JSON.parse(result.data);
-      expect(data.model).toBe('gpt-5.5'); // 验证剥离了 'pqq/' 前缀
-      expect(data.input).toBe('ping');
+      expect(data.model).toBe('p390/gpt-5.5');
+      expect(data.messages).toEqual([{ role: 'user', content: 'ping' }]);
+      expect(data.max_tokens).toBe(16);
       expect(data.stream).toBe(false);
+    });
+  });
+
+  describe('resolveCpaApiKey', () => {
+    it('prefers explicit key over config store keys', () => {
+      useConfigStore.setState({
+        config: { apiKeys: ['store-key-1', 'store-key-2'] } as unknown as any,
+      });
+      expect(resolveCpaApiKey('explicit-key')).toBe('explicit-key');
+    });
+
+    it('extracts first key from config store when explicit key is omitted', () => {
+      useConfigStore.setState({
+        config: { apiKeys: ['store-key-1', 'store-key-2'] } as unknown as any,
+      });
+      expect(resolveCpaApiKey()).toBe('store-key-1');
+    });
+
+    it('supports kebab-case api-keys from config', () => {
+      useConfigStore.setState({
+        config: { 'api-keys': ['kebab-key-1'] } as unknown as any,
+      });
+      expect(resolveCpaApiKey()).toBe('kebab-key-1');
     });
   });
 
@@ -570,10 +571,15 @@ describe('accountWarmup model', () => {
   });
 
   describe('executeWarmupInference', () => {
-    it('successfully calls apiCallApi.request and extracts snippet', async () => {
-      const row = makeMockRow();
+    it('successfully calls apiCallApi.request via CPA standard chat completions and extracts snippet', async () => {
+      const row = makeMockRow({
+        raw: {
+          name: 'p390.json',
+          prefix: 'p390',
+        },
+      });
       const config: AccountWarmupConfig = {
-        model: 'gpt-5-codex',
+        model: 'gpt-5.5',
         prompt: 'ping',
         maxTokens: 16,
         mode: 'inferred',
@@ -582,7 +588,7 @@ describe('accountWarmup model', () => {
         enabled: false,
       };
 
-      vi.spyOn(apiCallApi, 'request').mockResolvedValueOnce({
+      const requestSpy = vi.spyOn(apiCallApi, 'request').mockResolvedValueOnce({
         statusCode: 200,
         hasStatusCode: true,
         header: {},
@@ -592,17 +598,30 @@ describe('accountWarmup model', () => {
         },
       });
 
-      const outcome = await executeWarmupInference(row, config);
+      const outcome = await executeWarmupInference(row, config, { apiKey: 'my-cpa-key' });
       expect(outcome.success).toBe(true);
       expect(outcome.statusCode).toBe(200);
       expect(outcome.responseSnippet).toBe('pong');
       expect(outcome.durationMs).toBeGreaterThanOrEqual(0);
+
+      expect(requestSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          method: 'POST',
+          url: 'http://127.0.0.1:8317/v1/chat/completions',
+          header: expect.objectContaining({
+            Authorization: 'Bearer my-cpa-key',
+            'Content-Type': 'application/json',
+          }),
+          data: expect.stringContaining('"model":"p390/gpt-5.5"'),
+        }),
+        expect.anything()
+      );
     });
 
     it('handles HTTP error responses properly', async () => {
       const row = makeMockRow();
       const config: AccountWarmupConfig = {
-        model: 'gpt-5-codex',
+        model: 'gpt-5.5',
         prompt: 'ping',
         maxTokens: 16,
         mode: 'inferred',

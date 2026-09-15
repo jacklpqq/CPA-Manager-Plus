@@ -9,6 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
 import type { AccountRow } from '../model/accountRows';
 import { Button } from '@/components/ui/Button';
+import { useAuthStore } from '@/stores/useAuthStore';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useModelsStore } from '@/stores/useModelsStore';
 import { DEFAULT_WARMUP_PROMPT } from '../model/accountWarmup';
 import { AccountWarmupModal, type AccountWarmupModalProps } from './AccountWarmupModal';
 
@@ -206,6 +209,10 @@ describe('AccountWarmupModal', () => {
     });
     vi.clearAllMocks();
     onClose = vi.fn();
+
+    useModelsStore.setState({ models: [], loading: false, error: null, cache: null });
+    useAuthStore.setState({ apiBase: 'http://127.0.0.1:8317' } as unknown as any);
+    useConfigStore.setState({ config: { apiKeys: ['test-cpa-key'] } } as unknown as any);
 
     mockScheduler = {
       getWarmupState: vi.fn().mockReturnValue({
@@ -448,9 +455,9 @@ describe('AccountWarmupModal', () => {
 
     expect(mockGetModelsForAuthFile).toHaveBeenCalledTimes(1);
 
-    // 验证展示了 Codex 专属协议端点提示
+    // 验证展示了 CPA 网关标准协议端点提示
     const bodyStr = JSON.stringify(renderer.toJSON());
-    expect(bodyStr).toContain('https://api.openai.com/v1/responses');
+    expect(bodyStr).toContain('/v1/chat/completions');
 
     // 找到刷新模型列表按钮 (title="accounts.warmup_model_refresh")
     const refreshBtn = renderer.root.findByProps({ title: 'accounts.warmup_model_refresh' });
@@ -519,5 +526,43 @@ describe('AccountWarmupModal', () => {
       })
     );
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('links directly with global useModelsStore and prioritizes current account prefix', async () => {
+    useModelsStore.setState({
+      models: [
+        { name: 'p390/gpt-5.5' },
+        { name: 'pqq/gpt-5.5' },
+        { name: 'gpt-6-astra' },
+      ],
+      loading: false,
+      error: null,
+      cache: null,
+    });
+
+    const row = makeMockRow({
+      raw: {
+        name: 'p390.json',
+        prefix: 'p390',
+        type: 'codex',
+      },
+    });
+
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(
+        <AccountWarmupModal
+          open={true}
+          row={row}
+          onClose={onClose}
+          scheduler={mockScheduler}
+        />
+      );
+      await Promise.resolve();
+    });
+
+    // 验证自动优先选中当前账号前缀模型 p390/gpt-5.5，绝不包含 pqq/gpt-5.5
+    const input = renderer.root.findByProps({ 'data-testid': 'mock-autocomplete-input' });
+    expect(input.props.value).toBe('p390/gpt-5.5');
   });
 });

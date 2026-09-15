@@ -26,6 +26,10 @@ import {
   IconX,
 } from '@/components/ui/icons';
 import type { AuthFilesApiRequestScope } from '@/services/api';
+import { apiKeysApi } from '@/services/api/apiKeys';
+import { useAuthStore } from '@/stores/useAuthStore';
+import { useConfigStore } from '@/stores/useConfigStore';
+import { useModelsStore } from '@/stores/useModelsStore';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
 import type { AccountRow } from '../model/accountRows';
@@ -126,7 +130,13 @@ export function AccountWarmupModal({
 }: AccountWarmupModalProps) {
   const { t } = useTranslation();
 
-  // 动态模型列表 (复用系统已有模型支持列表方法获取)
+  // 网关全局模型与认证/配置 Store 联动
+  const gatewayModels = useModelsStore((state) => state.models);
+  const fetchGatewayModels = useModelsStore((state) => state.fetchModels);
+  const apiBase = useAuthStore((state) => state.apiBase);
+  const config = useConfigStore((state) => state.config);
+
+  // 动态模型列表 (局部备选与降级获取)
   const [dynamicModels, setDynamicModels] = useState<Array<{ id: string; name?: string; display_name?: string }>>([]);
   const [modelsLoading, setModelsLoading] = useState(false);
 
@@ -160,7 +170,7 @@ export function AccountWarmupModal({
   const requestScopeRef = useRef(requestScope);
   requestScopeRef.current = requestScope;
 
-  // 动态拉取该认证文件支持的真实可用模型列表 (复用系统已有模型支持列表方法)
+  // 动态拉取该认证文件支持的真实可用模型列表 (作为网关模型未获取到时的降级手段)
   const loadDynamicModels = useCallback(async () => {
     if (!row) return [];
     setModelsLoading(true);
@@ -184,7 +194,48 @@ export function AccountWarmupModal({
     }
   }, [row]);
 
-  // 主动刷新凭证模型列表并即时联动更新当前选中模型
+  // 确保全局网关模型列表已就绪
+  const ensureGatewayModels = useCallback(
+    async (force = false) => {
+      if (!apiBase) return [];
+      setModelsLoading(true);
+      try {
+        let key = '';
+        const configKeys = Array.isArray(config?.apiKeys)
+          ? config.apiKeys
+          : Array.isArray((config as Record<string, unknown> | null)?.['api-keys'])
+            ? ((config as Record<string, unknown>)['api-keys'] as string[])
+            : [];
+        if (configKeys.length > 0 && typeof configKeys[0] === 'string' && configKeys[0].trim()) {
+          key = configKeys[0].trim();
+        } else {
+          try {
+            const remoteKeys = await apiKeysApi.list();
+            if (remoteKeys.length > 0 && typeof remoteKeys[0] === 'string' && remoteKeys[0].trim()) {
+              key = remoteKeys[0].trim();
+            }
+          } catch {
+            // 忽略远程 key 读取异常
+          }
+        }
+        return await fetchGatewayModels(apiBase, key, force);
+      } catch {
+        return [];
+      } finally {
+        setModelsLoading(false);
+      }
+    },
+    [apiBase, config, fetchGatewayModels]
+  );
+
+  // 弹窗打开时自动同步全局网关模型
+  useEffect(() => {
+    if (open && gatewayModels.length === 0) {
+      void ensureGatewayModels(false);
+    }
+  }, [open, gatewayModels.length, ensureGatewayModels]);
+
+  // 主动刷新模型列表处理逻辑
   const handleRefreshModels = useCallback(async () => {
     if (!row) return;
     setModelsLoading(true);
@@ -192,17 +243,19 @@ export function AccountWarmupModal({
       if (onRefreshModels) {
         await onRefreshModels();
       }
-      const items = await loadDynamicModels();
-      if (items && items.length > 0) {
-        const candidates = getWarmupCandidateModels(row.provider, items, { row });
-        if (candidates.length > 0) {
-          setModel(candidates[0]);
-        }
+      const list = await ensureGatewayModels(true);
+      let modelItems = list.map((m) => ({ id: m.name, name: m.name }));
+      if (modelItems.length === 0) {
+        modelItems = await loadDynamicModels();
+      }
+      const candidates = getWarmupCandidateModels(row.provider, modelItems, { row });
+      if (candidates.length > 0) {
+        setModel(candidates[0]);
       }
     } finally {
       setModelsLoading(false);
     }
-  }, [loadDynamicModels, onRefreshModels, row]);
+  }, [ensureGatewayModels, loadDynamicModels, onRefreshModels, row]);
 
   // 当外部异步拉取的 modelsList 到达时，联动重新拉取可用模型
   useEffect(() => {
@@ -212,7 +265,16 @@ export function AccountWarmupModal({
     }
   }, [modelsList, open, row, loadDynamicModels]);
 
+  // 当全局模型未就绪且无动态模型时，通过凭证文件兜底加载
+  useEffect(() => {
+    if (!open || !row) return;
+    if (gatewayModels.length === 0 && dynamicModels.length === 0) {
+      void loadDynamicModels();
+    }
+  }, [open, row, gatewayModels.length, dynamicModels.length, loadDynamicModels]);
+
   // 初始化与同步状态
+  const rowKey = row?.selectionKey;
   useEffect(() => {
     if (!open || !row) return;
 
@@ -229,28 +291,30 @@ export function AccountWarmupModal({
     setEnabled(Boolean(state.config.enabled));
     setLocalLastResult(null);
     setRefreshedInferredResult(null);
+  }, [open, rowKey, scheduler]);
 
-    // 动态拉取真实模型，并智能联动默认选中模型
-    let isCancelled = false;
-    void loadDynamicModels().then((items) => {
-      if (isCancelled || !items || items.length === 0) return;
-      const candidates = getWarmupCandidateModels(row.provider, items, { row });
-      // 若当前未指定模型，或之前保存的模型不在当前可用候选列表中，自动选中真实首选模型
-      if (candidates.length > 0 && (!state.config.model || !candidates.includes(state.config.model))) {
-        setModel(candidates[0]);
-      }
-    });
-
-    return () => {
-      isCancelled = true;
-    };
-  }, [open, row, scheduler, loadDynamicModels]);
-
-  // 计算候选模型（结合凭据 prefix 与 excluded-models 过滤后的真实可用模型）
+  // 候选模型提取源优先基于全局网关模型库（33个注册模型）
   const candidateModels = useMemo(() => {
     if (!row) return [];
-    return getWarmupCandidateModels(row.provider, dynamicModels, { row });
-  }, [row, dynamicModels]);
+    const modelItems =
+      gatewayModels.length > 0
+        ? gatewayModels.map((m) => ({ id: m.name, name: m.name }))
+        : dynamicModels;
+    return getWarmupCandidateModels(row.provider, modelItems, { row });
+  }, [row, gatewayModels, dynamicModels]);
+
+  // 智能默认选中规则：当候选模型列表准备好且当前模型为空或不在候选列表中时，自动选中第一项优先模型
+  useEffect(() => {
+    if (!open || !row) return;
+    if (candidateModels.length > 0) {
+      setModel((prev) => {
+        if (!prev || !candidateModels.includes(prev)) {
+          return candidateModels[0];
+        }
+        return prev;
+      });
+    }
+  }, [open, rowKey, candidateModels]);
 
   // 基础推断下次时间计算
   const defaultInferred = useMemo(() => {
@@ -464,13 +528,11 @@ export function AccountWarmupModal({
           {/* 预热端点与协议规范提示 */}
           <div className={styles.endpointHint}>
             <span>{t('accounts.warmup_endpoint_label', { defaultValue: '预热端点' })}:</span>
-            <code>{getDefaultWarmupEndpoint(row)}</code>
+            <code>{getDefaultWarmupEndpoint(row, apiBase)}</code>
             <span className={styles.protocolBadge}>
-              {row.provider?.toLowerCase() === 'codex'
-                ? 'Codex /responses 专属协议'
-                : row.provider?.toLowerCase() === 'claude'
-                  ? 'Claude /messages 协议'
-                  : 'OpenAI 兼容协议'}
+              {t('accounts.warmup_protocol_cpa', {
+                defaultValue: 'CPA 网关标准协议 (/v1/chat/completions)',
+              })}
             </span>
           </div>
 

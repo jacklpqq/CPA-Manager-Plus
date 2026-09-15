@@ -5,7 +5,7 @@
 
 import { apiCallApi, getApiCallErrorMessage, type ApiCallResult } from '@/services/api/apiCall';
 import { authFilesApi, type AuthFilesApiRequestScope } from '@/services/api/authFiles';
-import { normalizeAuthIndex } from '@/utils/authIndex';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { isValidQuotaResetAtMs } from '@/utils/quota/formatters';
 import {
   buildAccountModelRuleProjection,
@@ -18,10 +18,6 @@ import {
   type AuthFileModelItem,
 } from '@/features/authFiles/constants';
 import { getAuthFilePatchTarget } from '@/features/authFiles/model/credentialStatus';
-import {
-  buildClaudeMessagesEndpoint,
-  buildCodexResponsesEndpoint,
-} from '@/components/providers/utils';
 import type { AuthFileItem } from '@/types';
 import type { AccountQuotaDisplayWindow } from './accountQuotaDisplayWindows';
 import type { AccountRow } from './accountRows';
@@ -134,7 +130,7 @@ export interface WarmupExecutionResult {
  * 各 Provider 默认推荐候选模型列表
  */
 export const DEFAULT_WARMUP_MODELS_BY_PROVIDER: Record<string, string[]> = {
-  codex: ['gpt-5-codex', 'gpt-5.3-codex-spark', 'gpt-5-mini', 'gpt-4o', 'chatgpt-4o-latest'],
+  codex: ['gpt-5.5', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna'],
   openai: ['gpt-4o', 'gpt-4o-mini', 'gpt-4-turbo'],
   claude: ['claude-3-7-sonnet-20250219', 'claude-3-5-sonnet-20241022', 'claude-3-5-haiku-20241022'],
   gemini: ['gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
@@ -225,12 +221,13 @@ export function getWarmupCandidateModels(
   const result: string[] = [];
   const seen = new Set<string>();
 
-  // 1. 提取前缀
+  // 1. 提取当前凭据前缀 (例如 p390)
   let prefix = options?.prefix;
   if (!prefix && options?.row) {
     prefix = extractPrefixFromRow(options.row);
   }
   const cleanPrefix = typeof prefix === 'string' ? prefix.trim().replace(/\/+$/g, '') : '';
+  const prefixMatch = cleanPrefix ? `${cleanPrefix}/` : '';
 
   // 2. 提取排除模型规则
   let excludedRules = options?.excludedModels;
@@ -238,48 +235,64 @@ export function getWarmupCandidateModels(
     excludedRules = extractExcludedModelsFromRow(options.row);
   }
   const cleanExcludedRules = Array.isArray(excludedRules) ? excludedRules : [];
-
-  // 判断模型是否匹配排除规则
   const isModelExcluded = (modelId: string): boolean => {
     if (cleanExcludedRules.length === 0) return false;
-    return cleanExcludedRules.some((rule) => matchesAccountModelRule(modelId, rule));
+    const stripped = stripModelPrefix(modelId, cleanPrefix);
+    return cleanExcludedRules.some(
+      (rule) =>
+        matchesAccountModelRule(modelId, rule) ||
+        (stripped && matchesAccountModelRule(stripped, rule))
+    );
   };
 
-  // 3. 处理动态获取到的凭证专属模型列表
+  // 3. 过滤并优先处理当前账号专属前缀模型
   if (Array.isArray(dynamicModels) && dynamicModels.length > 0) {
-    for (const item of dynamicModels) {
-      const id = String(item.id || '').trim();
-      if (!id) continue;
+    const rawIds = dynamicModels
+      .map((item) => String(item.id || item.name || '').trim())
+      .filter(Boolean);
 
-      // 原始模型 ID (未被排除则加入)
-      if (!isModelExcluded(id) && !seen.has(id.toLowerCase())) {
-        seen.add(id.toLowerCase());
-        result.push(id);
+    // 【第一梯队 - 绝对优先】：显式以当前凭据 prefix 开头的模型 (例如 p390/gpt-5.5)
+    if (cleanPrefix) {
+      for (const id of rawIds) {
+        if (id.startsWith(prefixMatch) && !isModelExcluded(id) && !seen.has(id.toLowerCase())) {
+          seen.add(id.toLowerCase());
+          result.push(id);
+        }
       }
+    }
 
-      // 若配置了前缀，且该 ID 尚未带有此前缀，自动生成带前缀版本（如 pqq/gpt-5.5）
-      if (cleanPrefix) {
-        const prefixedId = id.startsWith(`${cleanPrefix}/`) ? id : `${cleanPrefix}/${id}`;
-        if (!isModelExcluded(prefixedId) && !seen.has(prefixedId.toLowerCase())) {
-          seen.add(prefixedId.toLowerCase());
-          result.push(prefixedId);
+    // 【第二梯队】：不带斜杠的公共基础模型，拼接当前前缀后加入
+    for (const id of rawIds) {
+      if (!id.includes('/') && !isModelExcluded(id)) {
+        const targetPrefixed = cleanPrefix ? `${cleanPrefix}/${id}` : id;
+        if (!seen.has(targetPrefixed.toLowerCase()) && !isModelExcluded(targetPrefixed)) {
+          seen.add(targetPrefixed.toLowerCase());
+          result.push(targetPrefixed);
+        }
+        if (!cleanPrefix && !seen.has(id.toLowerCase())) {
+          seen.add(id.toLowerCase());
+          result.push(id);
         }
       }
     }
   }
 
-  // 4. 若成功提取到动态模型，直接返回真实可用列表！不再追加写死的假模型
   if (result.length > 0) {
     return result;
   }
 
-  // 5. 兜底回退：仅当动态列表彻底为空时，补充 Provider 内置推荐模型
+  // 4. 兜底回退备用列表
   const normalized = String(provider || '').trim().toLowerCase();
-  const presets = DEFAULT_WARMUP_MODELS_BY_PROVIDER[normalized] || DEFAULT_WARMUP_MODELS_BY_PROVIDER.openai;
+  const presets =
+    normalized === 'codex'
+      ? ['gpt-5.5', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']
+      : DEFAULT_WARMUP_MODELS_BY_PROVIDER[normalized] || DEFAULT_WARMUP_MODELS_BY_PROVIDER.openai;
+
   for (const preset of presets) {
-    if (!isModelExcluded(preset) && !seen.has(preset.toLowerCase())) {
-      seen.add(preset.toLowerCase());
-      result.push(preset);
+    const target = cleanPrefix ? `${cleanPrefix}/${preset}` : preset;
+    if (!isModelExcluded(target) && !seen.has(target.toLowerCase())) {
+      seen.add(target.toLowerCase());
+      result.push(target);
     }
   }
 
@@ -287,63 +300,33 @@ export function getWarmupCandidateModels(
 }
 
 /**
- * 依据凭据属性与 Provider 获取默认预热请求的 Endpoint
+ * 依据凭据属性与环境配置获取默认预热请求的 Endpoint
+ * 完全复用 CLI Proxy API 标准会话调用接口 (/v1/chat/completions)
  *
  * 核心设计（代码即文档）：
- * 1. Codex 凭据为 ChatGPT 订阅账号（Plus/Team/Pro），非 OpenAI Platform 付费 API。
- *    因此绝对不能向 /v1/chat/completions 发送请求（否则必报 429 You have no credits remaining）；
- *    必须使用 Codex 官方专用的 /v1/responses 端点（如 https://api.openai.com/v1/responses）。
- * 2. Claude 凭据走 /v1/messages 端点（如 https://api.anthropic.com/v1/messages）。
- * 3. xAI CLI/Grok 凭据走 https://cli-chat-proxy.grok.com/v1/responses。
- * 4. 若凭据自定义了 base_url / endpoint，则基于各自协议规范化端点。
+ * 1. 预热必须 100% 完全复用 CLI Proxy API (CPA) 标准模型调用机制，禁止绕过网关直连上游公网端点；
+ * 2. 默认请求网关标准接口 POST /v1/chat/completions；
+ * 3. 上游协议适配（OpenAI、Codex、Claude、Gemini 等）全部由 CPA 网关自动翻译处理；
+ * 4. 若传入 apiBase，则基于该基础地址拼接 /v1/chat/completions。
  */
-export function getDefaultWarmupEndpoint(row: AccountRow): string {
-  // 若凭证原始数据中存在显式指定的 base_url 或 endpoint，则以其为准
+export function getDefaultWarmupEndpoint(row?: AccountRow | null, apiBase?: string): string {
+  if (apiBase && apiBase.trim()) {
+    return `${apiBase.trim().replace(/\/+$/g, '')}/v1/chat/completions`;
+  }
   const rawBase =
-    (row.raw['base_url'] ||
-      row.raw.baseUrl ||
-      row.raw['endpoint'] ||
-      row.raw.endpoint) as string | undefined;
-
-  const normalized = String(row.provider || '').trim().toLowerCase();
+    (row?.raw?.['base_url'] ||
+      row?.raw?.baseUrl ||
+      row?.raw?.['endpoint'] ||
+      row?.raw?.endpoint) as string | undefined;
 
   if (rawBase && typeof rawBase === 'string' && rawBase.trim()) {
     const trimmedBase = rawBase.trim().replace(/\/+$/g, '');
-    if (normalized === 'claude') {
-      return buildClaudeMessagesEndpoint(trimmedBase);
-    }
-    if (normalized === 'codex') {
-      return buildCodexResponsesEndpoint(trimmedBase);
-    }
-    if (normalized === 'xai' && trimmedBase.includes('cli-chat-proxy')) {
-      if (trimmedBase.endsWith('/v1/responses')) return trimmedBase;
-      if (trimmedBase.endsWith('/v1')) return `${trimmedBase}/responses`;
-      return `${trimmedBase}/v1/responses`;
-    }
     if (trimmedBase.endsWith('/chat/completions')) return trimmedBase;
     if (trimmedBase.endsWith('/v1')) return `${trimmedBase}/chat/completions`;
     return `${trimmedBase}/v1/chat/completions`;
   }
 
-  // 默认官方公网端点 (由后端 CPA 代理请求并注入鉴权)
-  switch (normalized) {
-    case 'claude':
-      return 'https://api.anthropic.com/v1/messages';
-    case 'codex':
-      return 'https://api.openai.com/v1/responses';
-    case 'xai':
-      return 'https://cli-chat-proxy.grok.com/v1/responses';
-    case 'gemini':
-    case 'aistudio':
-      return 'https://generativelanguage.googleapis.com/v1beta/chat/completions';
-    case 'kimi':
-      return 'https://api.moonshot.cn/v1/chat/completions';
-    case 'qwen':
-      return 'https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions';
-    case 'openai':
-    default:
-      return 'https://api.openai.com/v1/chat/completions';
-  }
+  return 'http://127.0.0.1:8317/v1/chat/completions';
 }
 
 /**
@@ -914,89 +897,61 @@ export async function fetchAuthFileSupportedModels(
  * 构建请求体与请求头
  * 严格按照 Codex / Claude / xAI / OpenAI 等协议组装 Headers 与 Body，杜绝 429 平台协议不兼容问题
  */
+/**
+ * 自动提取首选 CPA API Key
+ * 优先使用显式传入的 key，其次从全局配置 store 中获取首个有效 API Key
+ */
+export function resolveCpaApiKey(explicitKey?: string): string {
+  if (explicitKey && explicitKey.trim()) return explicitKey.trim();
+  const config = useConfigStore.getState().config;
+  const configKeys = Array.isArray(config?.apiKeys)
+    ? config.apiKeys
+    : Array.isArray((config as Record<string, unknown> | null)?.['api-keys'])
+      ? ((config as Record<string, unknown>)['api-keys'] as string[])
+      : [];
+  for (const key of configKeys) {
+    if (typeof key === 'string' && key.trim()) return key.trim();
+  }
+  return '';
+}
+
+/**
+ * 构建 CPA 标准预热请求体与请求头
+ * 遵循 OpenAI Chat 协议标准，携带 X-Session-ID / X-Session-Affinity 保证会话纯净隔离
+ */
 export function buildWarmupPayload(
   provider: string,
   endpoint: string,
   model: string,
   prompt: string,
   maxTokens: number,
-  rawRow?: AccountRow | null
+  rawRow?: AccountRow | null,
+  apiKey?: string
 ): { header: Record<string, string>; data: string } {
-  const normalized = String(provider || '').trim().toLowerCase();
   const prefix = rawRow ? extractPrefixFromRow(rawRow) : undefined;
-  // 剥离上游模型的前缀（如 'pqq/gpt-5.5' -> 'gpt-5.5'），避免上游报模型不存在
-  const upstreamModel = stripModelPrefix(model, prefix);
+  const targetModel =
+    prefix && !model.startsWith(`${prefix}/`) ? `${prefix}/${model}` : model;
+
+  const reqSessionId =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `warmup-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+  const resolvedKey = resolveCpaApiKey(apiKey);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
-    Authorization: 'Bearer $TOKEN$',
+    'X-Session-ID': reqSessionId,
+    'X-Session-Affinity': reqSessionId,
   };
-
-  // 1. Claude /messages 格式
-  if (normalized === 'claude' || endpoint.includes('/messages')) {
-    headers['x-api-key'] = '$TOKEN$';
-    headers['anthropic-version'] = '2023-06-01';
-    headers['anthropic-beta'] = 'oauth-2025-04-20';
-    return {
-      header: headers,
-      data: JSON.stringify({
-        model: upstreamModel,
-        max_tokens: maxTokens,
-        messages: [{ role: 'user', content: prompt }],
-      }),
-    };
+  if (resolvedKey) {
+    headers['Authorization'] = `Bearer ${resolvedKey}`;
   }
 
-  // 2. Codex /responses 格式 (严格符合 Codex 客户端协议规范)
-  if (normalized === 'codex' || endpoint.includes('/responses')) {
-    headers['User-Agent'] =
-      'codex-tui/0.149.1 (Mac OS 26.5.2; arm64) iTerm.app/3.6.11 (codex-tui; 0.149.1)';
-    headers['OpenAI-Beta'] = 'codex-1';
-    headers['Accept'] = 'application/json';
-
-    // 提取 Chatgpt-Account-Id (若凭据中包含)
-    const rawRecord = (rawRow?.raw ?? {}) as Record<string, unknown>;
-    const accountId = String(
-      rawRecord['chatgpt_account_id'] ??
-        rawRecord['chatgpt-account-id'] ??
-        rawRecord['accountId'] ??
-        rawRecord['account_id'] ??
-        ''
-    ).trim();
-    if (accountId) {
-      headers['Chatgpt-Account-Id'] = accountId;
-    }
-
-    return {
-      header: headers,
-      data: JSON.stringify({
-        model: upstreamModel,
-        input: prompt,
-        stream: false,
-      }),
-    };
-  }
-
-  // 3. xAI CLI Proxy /responses 格式
-  if (normalized === 'xai' && endpoint.includes('cli-chat-proxy')) {
-    headers['x-xai-token-auth'] = 'xai-grok-cli';
-    headers['x-grok-client-version'] = '0.2.101';
-    headers['User-Agent'] = 'xai-cli/0.2.101';
-    return {
-      header: headers,
-      data: JSON.stringify({
-        model: upstreamModel,
-        input: prompt,
-        stream: false,
-      }),
-    };
-  }
-
-  // 4. 默认 OpenAI /chat/completions 兼容格式 (适用于 OpenAI API Key、Gemini、Kimi、Qwen 等)
   return {
     header: headers,
     data: JSON.stringify({
-      model: upstreamModel,
+      model: targetModel,
       messages: [{ role: 'user', content: prompt }],
       max_tokens: maxTokens,
       stream: false,
@@ -1005,72 +960,101 @@ export function buildWarmupPayload(
 }
 
 /**
- * 执行凭据推理预热请求
+ * 执行凭据预热推理（完全复用 CLI Proxy API 官方会话调用方式）
+ *
+ * 核心设计（代码即文档）：
+ * 1. 100% 完全复用 CLI Proxy API (CPA) 标准 Chat Completions 调用机制，禁止绕过网关直连上游公网端点；
+ * 2. 路由依赖模型前缀（如 p390/gpt-5.5），由网关精准分发至对应账号；
+ * 3. 携带 X-Session-ID / X-Session-Affinity 作为 1-token 无状态探测会话，杜绝上下文污染；
+ * 4. 使用统一的网关 API Key 鉴权 (Bearer <CPA_KEY>)；
+ * 5. 通过管理后台 /api-call 代理请求至本地 CPA 网关 (默认 http://127.0.0.1:8317/v1/chat/completions)。
  */
 export async function executeWarmupInference(
   row: AccountRow,
-  config: AccountWarmupConfig
+  config: AccountWarmupConfig,
+  options?: { apiBase?: string; apiKey?: string }
 ): Promise<WarmupExecutionResult> {
-  const authIndex = normalizeAuthIndex(row.raw['auth_index'] ?? row.raw.authIndex ?? row.authIndex);
-  const endpoint = config.customEndpoint?.trim() || getDefaultWarmupEndpoint(row);
-  const model = config.model.trim() || getDefaultWarmupModel(row.provider);
+  const prefix = extractPrefixFromRow(row);
+  const rawModel = config.model.trim() || getDefaultWarmupModel(row.provider);
+  // 确保目标模型带有当前账号路由前缀 (如 p390/gpt-5.5)
+  const targetModel =
+    prefix && !rawModel.startsWith(`${prefix}/`) ? `${prefix}/${rawModel}` : rawModel;
+
   const prompt = config.prompt.trim() || DEFAULT_WARMUP_PROMPT;
   const maxTokens = config.maxTokens > 0 ? config.maxTokens : DEFAULT_WARMUP_MAX_TOKENS;
 
-  const { header, data } = buildWarmupPayload(row.provider, endpoint, model, prompt, maxTokens, row);
+  // 构造随机独立的 Session ID，杜绝上下文串扰
+  const reqSessionId =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `warmup-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+
+  const apiKey = resolveCpaApiKey(options?.apiKey);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Session-ID': reqSessionId,
+    'X-Session-Affinity': reqSessionId,
+  };
+  if (apiKey) {
+    headers['Authorization'] = `Bearer ${apiKey}`;
+  }
+
+  const payload = {
+    model: targetModel,
+    messages: [{ role: 'user', content: prompt }],
+    max_tokens: maxTokens,
+    stream: false,
+  };
 
   const startTime = performance.now();
-  let statusCode = 0;
-  let responseSnippet = '';
-  let errorMessage: string | undefined;
-  let rawResult: ApiCallResult | undefined;
 
+  // 完全通过网关内部管理代理发送至网关标准端点 (http://127.0.0.1:8317/v1/chat/completions)
   try {
-    const result = await apiCallApi.request(
+    const defaultEndpoint = options?.apiBase
+      ? `${options.apiBase.replace(/\/+$/, '')}/v1/chat/completions`
+      : 'http://127.0.0.1:8317/v1/chat/completions';
+    const apiCallResult: ApiCallResult = await apiCallApi.request(
       {
-        authIndex: authIndex || undefined,
         method: 'POST',
-        url: endpoint,
-        header,
-        data,
+        url: config.customEndpoint?.trim() || defaultEndpoint,
+        header: headers,
+        data: JSON.stringify(payload),
       },
       { timeout: 30000 }
     );
 
     const durationMs = Math.round(performance.now() - startTime);
-    rawResult = result;
-    statusCode = result.statusCode;
 
-    if (result.statusCode >= 200 && result.statusCode < 300) {
-      responseSnippet = extractModelResponseContent(result.body, result.bodyText);
+    if (apiCallResult.statusCode >= 200 && apiCallResult.statusCode < 300) {
+      const content = extractModelResponseContent(apiCallResult.body, apiCallResult.bodyText);
       return {
         success: true,
-        statusCode,
+        statusCode: apiCallResult.statusCode,
         durationMs,
-        responseSnippet: responseSnippet || '(OK)',
-        rawResult,
+        responseSnippet: content || '(OK)',
+        rawResult: apiCallResult,
       };
     }
 
-    errorMessage = getApiCallErrorMessage(result);
-    responseSnippet = extractModelResponseContent(result.body, result.bodyText) || errorMessage;
+    const errorMessage = getApiCallErrorMessage(apiCallResult);
     return {
       success: false,
-      statusCode,
-      durationMs,
-      responseSnippet,
-      errorMessage,
-      rawResult,
-    };
-  } catch (err: unknown) {
-    const durationMs = Math.round(performance.now() - startTime);
-    errorMessage = err instanceof Error ? err.message : 'Unknown network error';
-    return {
-      success: false,
-      statusCode: statusCode || 0,
+      statusCode: apiCallResult.statusCode,
       durationMs,
       responseSnippet: errorMessage,
       errorMessage,
+      rawResult: apiCallResult,
+    };
+  } catch (err: unknown) {
+    const durationMs = Math.round(performance.now() - startTime);
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      success: false,
+      statusCode: 0,
+      durationMs,
+      responseSnippet: message,
+      errorMessage: message,
     };
   }
 }
