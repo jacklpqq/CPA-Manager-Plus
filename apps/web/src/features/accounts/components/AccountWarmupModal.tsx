@@ -244,7 +244,10 @@ export function AccountWarmupModal({
         await onRefreshModels();
       }
       const list = await ensureGatewayModels(true);
-      let modelItems = list.map((m) => ({ id: m.name, name: m.name }));
+      let modelItems: Array<{ id: string; name?: string; display_name?: string }> = list.map((m) => ({
+        id: m.name,
+        name: m.name,
+      }));
       if (modelItems.length === 0) {
         modelItems = await loadDynamicModels();
       }
@@ -296,7 +299,7 @@ export function AccountWarmupModal({
   // 候选模型提取源优先基于全局网关模型库（33个注册模型）
   const candidateModels = useMemo(() => {
     if (!row) return [];
-    const modelItems =
+    const modelItems: Array<{ id: string; name?: string; display_name?: string }> =
       gatewayModels.length > 0
         ? gatewayModels.map((m) => ({ id: m.name, name: m.name }))
         : dynamicModels;

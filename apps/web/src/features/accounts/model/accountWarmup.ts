@@ -215,7 +215,7 @@ export function getDefaultWarmupModel(
  */
 export function getWarmupCandidateModels(
   provider: string,
-  dynamicModels?: Array<{ id: string; name?: string }>,
+  dynamicModels?: Array<{ id: string; name?: string; display_name?: string }>,
   options?: WarmupCandidateModelsOptions
 ): string[] {
   const result: string[] = [];
@@ -920,8 +920,8 @@ export function resolveCpaApiKey(explicitKey?: string): string {
  * 遵循 OpenAI Chat 协议标准，携带 X-Session-ID / X-Session-Affinity 保证会话纯净隔离
  */
 export function buildWarmupPayload(
-  provider: string,
-  endpoint: string,
+  _provider: string,
+  _endpoint: string,
   model: string,
   prompt: string,
   maxTokens: number,
