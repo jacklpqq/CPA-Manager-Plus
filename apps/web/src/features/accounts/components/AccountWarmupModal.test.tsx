@@ -61,6 +61,7 @@ vi.mock('@/components/ui/AutocompleteInput', () => ({
     onChange,
     placeholder,
     disabled,
+    options,
   }: {
     value?: string;
     onChange?: (val: string) => void;
@@ -73,6 +74,7 @@ vi.mock('@/components/ui/AutocompleteInput', () => ({
       value={value}
       disabled={disabled}
       placeholder={placeholder}
+      data-options={JSON.stringify(options)}
       onChange={(e) => onChange?.(e.target.value)}
     />
   ),
@@ -561,8 +563,12 @@ describe('AccountWarmupModal', () => {
       await Promise.resolve();
     });
 
-    // 验证自动优先选中当前账号前缀模型 p390/gpt-5.5，绝不包含 pqq/gpt-5.5
+    // 验证自动优先选中当前账号前缀模型 p390/gpt-5.5，且候选列表中绝不包含其他账号 pqq/ 的模型
     const input = renderer.root.findByProps({ 'data-testid': 'mock-autocomplete-input' });
     expect(input.props.value).toBe('p390/gpt-5.5');
+    const options = JSON.parse(input.props['data-options']);
+    expect(options[0]).toBe('p390/gpt-5.5');
+    expect(options).toContain('p390/gpt-6-astra');
+    expect(options).not.toContain('pqq/gpt-5.5');
   });
 });

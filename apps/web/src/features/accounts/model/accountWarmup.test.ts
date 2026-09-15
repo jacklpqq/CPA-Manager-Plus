@@ -176,6 +176,38 @@ describe('accountWarmup model', () => {
       expect(candidates).not.toContain('disabled-model');
     });
 
+    it('correctly filters out models with complex wildcard excluded-models rules', () => {
+      const dynamic = [
+        { id: 'p390/gpt-5.5' },
+        { id: 'p390/gpt-5.6-sol' },
+        { id: 'p390/gpt-6-astra' },
+        { id: 'gpt-4o' },
+      ];
+      // 规则包含前缀匹配与通配符规则：过滤所有 gpt-5* 以及 *astra
+      const candidates = getWarmupCandidateModels('codex', dynamic, {
+        prefix: 'p390',
+        excludedModels: ['gpt-5*', '*astra'],
+      });
+      // p390/gpt-5.5 与 p390/gpt-5.6-sol 均匹配 gpt-5*，p390/gpt-6-astra 匹配 *astra
+      expect(candidates).not.toContain('p390/gpt-5.5');
+      expect(candidates).not.toContain('p390/gpt-5.6-sol');
+      expect(candidates).not.toContain('p390/gpt-6-astra');
+      // 仅公共基础模型 gpt-4o 被保留并自动补全前缀
+      expect(candidates).toEqual(['p390/gpt-4o']);
+    });
+
+    it('filters excluded models when falling back to provider presets', () => {
+      // 动态模型为空时回退到 codex presets: ['gpt-5.5', 'gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']
+      const candidates = getWarmupCandidateModels('codex', [], {
+        prefix: 'p390',
+        excludedModels: ['gpt-5.5', '*sol'],
+      });
+      expect(candidates).not.toContain('p390/gpt-5.5');
+      expect(candidates).not.toContain('p390/gpt-5.6-sol');
+      expect(candidates[0]).toBe('p390/gpt-6-astra');
+      expect(candidates).toContain('p390/gpt-5.6-terra');
+    });
+
     it('extracts prefix and excluded models directly from row', () => {
       const row = makeMockRow({
         raw: {
@@ -186,6 +218,19 @@ describe('accountWarmup model', () => {
       });
       expect(extractPrefixFromRow(row)).toBe('team');
       expect(extractExcludedModelsFromRow(row)).toEqual(['o1-preview']);
+    });
+
+    it('getDefaultWarmupModel respects row prefix and excluded models', () => {
+      const row = makeMockRow({
+        provider: 'codex',
+        raw: {
+          name: 'p390.json',
+          prefix: 'p390',
+          'excluded-models': ['gpt-5.5'],
+        },
+      });
+      const model = getDefaultWarmupModel('codex', undefined, { row });
+      expect(model).toBe('p390/gpt-6-astra');
     });
   });
 

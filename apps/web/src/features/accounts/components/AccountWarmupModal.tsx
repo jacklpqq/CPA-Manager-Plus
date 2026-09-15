@@ -28,7 +28,6 @@ import {
 import type { AuthFilesApiRequestScope } from '@/services/api';
 import { apiKeysApi } from '@/services/api/apiKeys';
 import { useAuthStore } from '@/stores/useAuthStore';
-import { useConfigStore } from '@/stores/useConfigStore';
 import { useModelsStore } from '@/stores/useModelsStore';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
@@ -46,6 +45,7 @@ import {
   getWarmupCandidateModels,
   inferNextWarmupTime,
   loadWarmupPrompt,
+  resolveCpaApiKey,
   saveWarmupPrompt,
   type AccountWarmupConfig,
   type AccountWarmupMode,
@@ -134,7 +134,6 @@ export function AccountWarmupModal({
   const gatewayModels = useModelsStore((state) => state.models);
   const fetchGatewayModels = useModelsStore((state) => state.fetchModels);
   const apiBase = useAuthStore((state) => state.apiBase);
-  const config = useConfigStore((state) => state.config);
 
   // 动态模型列表 (局部备选与降级获取)
   const [dynamicModels, setDynamicModels] = useState<Array<{ id: string; name?: string; display_name?: string }>>([]);
@@ -200,15 +199,8 @@ export function AccountWarmupModal({
       if (!apiBase) return [];
       setModelsLoading(true);
       try {
-        let key = '';
-        const configKeys = Array.isArray(config?.apiKeys)
-          ? config.apiKeys
-          : Array.isArray((config as Record<string, unknown> | null)?.['api-keys'])
-            ? ((config as Record<string, unknown>)['api-keys'] as string[])
-            : [];
-        if (configKeys.length > 0 && typeof configKeys[0] === 'string' && configKeys[0].trim()) {
-          key = configKeys[0].trim();
-        } else {
+        let key = resolveCpaApiKey();
+        if (!key) {
           try {
             const remoteKeys = await apiKeysApi.list();
             if (remoteKeys.length > 0 && typeof remoteKeys[0] === 'string' && remoteKeys[0].trim()) {
@@ -225,7 +217,7 @@ export function AccountWarmupModal({
         setModelsLoading(false);
       }
     },
-    [apiBase, config, fetchGatewayModels]
+    [apiBase, fetchGatewayModels]
   );
 
   // 弹窗打开时自动同步全局网关模型

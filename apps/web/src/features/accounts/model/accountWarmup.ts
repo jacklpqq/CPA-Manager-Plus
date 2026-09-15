@@ -189,7 +189,7 @@ export interface WarmupCandidateModelsOptions {
  */
 export function getDefaultWarmupModel(
   provider: string,
-  dynamicModels?: Array<{ id: string; name?: string }>,
+  dynamicModels?: Array<{ id: string; name?: string; display_name?: string }>,
   options?: WarmupCandidateModelsOptions
 ): string {
   const normalized = String(provider || '').trim().toLowerCase();
@@ -647,7 +647,7 @@ export function saveWarmupPrompt(prompt: string): void {
 export function loadAccountWarmupConfig(
   accountKey: string,
   provider: string,
-  dynamicModels?: Array<{ id: string; name?: string }>,
+  dynamicModels?: Array<{ id: string; name?: string; display_name?: string }>,
   options?: WarmupCandidateModelsOptions
 ): AccountWarmupConfig {
   const defaultModel = getDefaultWarmupModel(provider, dynamicModels, options);
@@ -967,59 +967,43 @@ export function buildWarmupPayload(
  * 2. 路由依赖模型前缀（如 p390/gpt-5.5），由网关精准分发至对应账号；
  * 3. 携带 X-Session-ID / X-Session-Affinity 作为 1-token 无状态探测会话，杜绝上下文污染；
  * 4. 使用统一的网关 API Key 鉴权 (Bearer <CPA_KEY>)；
- * 5. 通过管理后台 /api-call 代理请求至本地 CPA 网关 (默认 http://127.0.0.1:8317/v1/chat/completions)。
+ * 5. 通过管理后台 /api-call 代理请求至本地 CPA 网关 (默认 http://127.0.0.1:8317/v1/chat/completions)；
+ * 6. 统一通过 buildWarmupPayload 构建请求体与头信息，确保单测与运行链路数据包规范 100% 保持一致。
  */
 export async function executeWarmupInference(
   row: AccountRow,
   config: AccountWarmupConfig,
   options?: { apiBase?: string; apiKey?: string }
 ): Promise<WarmupExecutionResult> {
-  const prefix = extractPrefixFromRow(row);
-  const rawModel = config.model.trim() || getDefaultWarmupModel(row.provider);
-  // 确保目标模型带有当前账号路由前缀 (如 p390/gpt-5.5)
-  const targetModel =
-    prefix && !rawModel.startsWith(`${prefix}/`) ? `${prefix}/${rawModel}` : rawModel;
-
+  const rawModel = config.model.trim() || getDefaultWarmupModel(row.provider, undefined, { row });
   const prompt = config.prompt.trim() || DEFAULT_WARMUP_PROMPT;
   const maxTokens = config.maxTokens > 0 ? config.maxTokens : DEFAULT_WARMUP_MAX_TOKENS;
 
-  // 构造随机独立的 Session ID，杜绝上下文串扰
-  const reqSessionId =
-    typeof crypto !== 'undefined' && crypto.randomUUID
-      ? crypto.randomUUID()
-      : `warmup-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
+  // 确定请求端点：优先采用自定义端点，其次根据 options.apiBase 或凭据属性解析，默认回退至 http://127.0.0.1:8317/v1/chat/completions
+  const defaultEndpoint = getDefaultWarmupEndpoint(row, options?.apiBase);
+  const targetUrl = config.customEndpoint?.trim() || defaultEndpoint;
 
-  const apiKey = resolveCpaApiKey(options?.apiKey);
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    'X-Session-ID': reqSessionId,
-    'X-Session-Affinity': reqSessionId,
-  };
-  if (apiKey) {
-    headers['Authorization'] = `Bearer ${apiKey}`;
-  }
-
-  const payload = {
-    model: targetModel,
-    messages: [{ role: 'user', content: prompt }],
-    max_tokens: maxTokens,
-    stream: false,
-  };
+  // 复用标准的 buildWarmupPayload 构建携带独立会话标识与路由前缀的标准请求数据包
+  const { header, data } = buildWarmupPayload(
+    row.provider,
+    targetUrl,
+    rawModel,
+    prompt,
+    maxTokens,
+    row,
+    options?.apiKey
+  );
 
   const startTime = performance.now();
 
   // 完全通过网关内部管理代理发送至网关标准端点 (http://127.0.0.1:8317/v1/chat/completions)
   try {
-    const defaultEndpoint = options?.apiBase
-      ? `${options.apiBase.replace(/\/+$/, '')}/v1/chat/completions`
-      : 'http://127.0.0.1:8317/v1/chat/completions';
     const apiCallResult: ApiCallResult = await apiCallApi.request(
       {
         method: 'POST',
-        url: config.customEndpoint?.trim() || defaultEndpoint,
-        header: headers,
-        data: JSON.stringify(payload),
+        url: targetUrl,
+        header,
+        data,
       },
       { timeout: 30000 }
     );
