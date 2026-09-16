@@ -70,14 +70,22 @@ func (s *Service) ListLogs(ctx context.Context, selectionKey string, limit int) 
 func (s *Service) ExecuteWarmup(ctx context.Context, sched *model.AccountWarmupSchedule, source string) (*model.WarmupExecutionResult, error) {
 	startTime := time.Now()
 
-	// 1. 读取 CPA 网关上游连接配置
-	setup, ok, err := s.store.LoadSetup(ctx)
-	if err != nil || !ok || strings.TrimSpace(setup.CPAUpstreamURL) == "" {
-		return nil, fmt.Errorf("cpa upstream url not configured in setup: %w", err)
+	// 1. 读取 CPA 网关上游连接配置（优先从 Setup 读取，兜底从 ManagerConfig 读取）
+	cpaBase := ""
+	mgmtKey := ""
+	if setup, ok, err := s.store.LoadSetup(ctx); err == nil && ok && strings.TrimSpace(setup.CPAUpstreamURL) != "" {
+		cpaBase = strings.TrimRight(strings.TrimSpace(setup.CPAUpstreamURL), "/")
+		mgmtKey = setup.ManagementKey
+	} else if cfg, cfgOk, cfgErr := s.store.LoadManagerConfig(ctx); cfgErr == nil && cfgOk && strings.TrimSpace(cfg.CPAConnection.BaseURL) != "" {
+		cpaBase = strings.TrimRight(strings.TrimSpace(cfg.CPAConnection.BaseURL), "/")
+		mgmtKey = cfg.CPAConnection.ManagementKey
 	}
 
-	cpaBase := strings.TrimRight(strings.TrimSpace(setup.CPAUpstreamURL), "/")
-	apiKey := s.resolveCPAKey(ctx, cpaBase, setup.ManagementKey)
+	if cpaBase == "" {
+		return nil, fmt.Errorf("cpa upstream url not configured in setup or manager config")
+	}
+
+	apiKey := s.resolveCPAKey(ctx, cpaBase, mgmtKey)
 
 	// 2. 路由前缀校验与模型名规范化 (如 p390 + gpt-5.5 -> p390/gpt-5.5)
 	targetModel := strings.TrimSpace(sched.Model)

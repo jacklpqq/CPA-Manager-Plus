@@ -43,6 +43,7 @@ func TestWarmupWorker_StartupCatchupAndExecution(t *testing.T) {
 
 	_ = st.SaveSetup(ctx, model.Setup{
 		CPAUpstreamURL: mockServer.URL,
+		ManagementKey:  "mgmt-test-secret",
 	})
 
 	repo := st.Warmup

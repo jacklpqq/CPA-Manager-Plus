@@ -32,7 +32,7 @@ import { useAuthStore } from '@/stores/useAuthStore';
 import { useModelsStore } from '@/stores/useModelsStore';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
-import { extractPrefixFromRow, type AccountRow } from '../model/accountRows';
+import type { AccountRow } from '../model/accountRows';
 import {
   DEFAULT_INFERRED_DELAY_SECONDS,
   DEFAULT_INTERVAL_MINUTES,
@@ -41,6 +41,7 @@ import {
   DEFAULT_WARMUP_MAX_TOKENS,
   DEFAULT_WARMUP_PROMPT,
   calculateTargetResetWarmupTime,
+  extractPrefixFromRow,
   fetchAuthFileSupportedModels,
   getDefaultWarmupEndpoint,
   getWarmupCandidateModels,
