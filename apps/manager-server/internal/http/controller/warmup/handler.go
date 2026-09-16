@@ -161,6 +161,6 @@ func (h *Handler) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 
 	default:
-		response.NotFound(w)
+		http.NotFound(w, r)
 	}
 }
