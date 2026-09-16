@@ -206,8 +206,26 @@ func (s *Service) resolveCPAKey(ctx context.Context, cpaBase, mgmtKey string) st
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return ""
+	}
+
+	// 兼容对象结构 {"api-keys": [...]} 或 {"api_keys": [...]}
+	var obj map[string][]string
+	if err := json.Unmarshal(bodyBytes, &obj); err == nil {
+		for _, keyList := range [][]string{obj["api-keys"], obj["api_keys"], obj["apiKeys"]} {
+			for _, k := range keyList {
+				if strings.TrimSpace(k) != "" {
+					return strings.TrimSpace(k)
+				}
+			}
+		}
+	}
+
+	// 兼容原生数组结构 ["cpa-..."]
 	var keys []string
-	if err := json.NewDecoder(resp.Body).Decode(&keys); err == nil && len(keys) > 0 {
+	if err := json.Unmarshal(bodyBytes, &keys); err == nil && len(keys) > 0 {
 		for _, k := range keys {
 			if strings.TrimSpace(k) != "" {
 				return strings.TrimSpace(k)

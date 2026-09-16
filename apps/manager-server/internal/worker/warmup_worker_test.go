@@ -21,7 +21,7 @@ func TestWarmupWorker_StartupCatchupAndExecution(t *testing.T) {
 	// 模拟 CPA 网关服务端
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v0/management/api-keys" {
-			_ = json.NewEncoder(w).Encode([]string{"test-key"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"api-keys": []string{"test-key"}})
 			return
 		}
 		if r.URL.Path == "/v1/chat/completions" {

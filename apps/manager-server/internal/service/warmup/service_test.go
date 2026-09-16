@@ -26,7 +26,7 @@ func TestWarmupService_ExecuteWarmup(t *testing.T) {
 		receivedAuth = r.Header.Get("Authorization")
 
 		if r.URL.Path == "/v0/management/api-keys" {
-			_ = json.NewEncoder(w).Encode([]string{"test-api-key-123"})
+			_ = json.NewEncoder(w).Encode(map[string]any{"api-keys": []string{"test-api-key-123"}})
 			return
 		}
 
