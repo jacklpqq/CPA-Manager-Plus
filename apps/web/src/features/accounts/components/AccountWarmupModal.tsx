@@ -455,17 +455,17 @@ export function AccountWarmupModal({
       const cleanPrefix = extractPrefixFromRow(row) || '';
       const payload: ServerWarmupSchedule = {
         selectionKey: row.selectionKey,
-        accountKey: row.account || row.accountLabel || row.selectionKey,
+        accountKey: row.accountLabel || row.selectionKey,
         provider: row.provider,
         prefix: cleanPrefix,
         model: activeConfig.model,
         prompt: activeConfig.prompt,
         maxTokens: activeConfig.maxTokens,
         mode: activeConfig.mode,
-        targetResetTime: activeConfig.targetResetTime,
-        leadHours: activeConfig.targetLeadHours,
-        intervalMinutes: activeConfig.intervalMinutes,
-        inferredDelaySeconds: activeConfig.inferredDelaySeconds,
+        targetResetTime: activeConfig.targetResetTime || DEFAULT_TARGET_RESET_TIME,
+        leadHours: activeConfig.targetLeadHours ?? DEFAULT_TARGET_LEAD_HOURS,
+        intervalMinutes: activeConfig.intervalMinutes ?? DEFAULT_INTERVAL_MINUTES,
+        inferredDelaySeconds: activeConfig.inferredDelaySeconds ?? DEFAULT_INFERRED_DELAY_SECONDS,
         enabled: activeConfig.enabled,
         nextRunAtMs: 0, // 服务端根据配置自动计算精确排期
       };
@@ -538,12 +538,28 @@ export function AccountWarmupModal({
         <div className={styles.serverGuardianBanner}>
           <span style={{ fontSize: 18 }}>🛡️</span>
           <div>
-            <strong>{t('accounts.warmup_server_guardian_title', { defaultValue: '服务端 7×24H 脱机常驻守护已激活' })}</strong>
+            <strong>
+              {serverLoading
+                ? t('common.loading', { defaultValue: '正在同步服务端预热调度...' })
+                : t('accounts.warmup_server_guardian_title', { defaultValue: '服务端 7×24H 脱机常驻守护已激活' })}
+            </strong>
             <p>
-              {t('accounts.warmup_server_guardian_desc', {
-                defaultValue:
-                  '预热配置已持久化至服务端 SQLite 数据库。服务端后台常驻守护协程自动按设定的提前量执行预热，彻底脱离浏览器生命周期，退出标签页或电脑关机均不受影响。',
-              })}
+              {serverSchedule?.enabled && serverSchedule.nextRunAtMs > 0 ? (
+                <>
+                  {t('accounts.warmup_server_guardian_desc', {
+                    defaultValue:
+                      '预热配置已持久化至服务端 SQLite 数据库。服务端后台常驻守护协程自动按设定的提前量执行预热，彻底脱离浏览器生命周期。',
+                  })}
+                  <span style={{ marginLeft: 6, fontWeight: 600, color: 'var(--primary-color)' }}>
+                    (下次预热时间: {formatTimestamp(serverSchedule.nextRunAtMs)})
+                  </span>
+                </>
+              ) : (
+                t('accounts.warmup_server_guardian_desc', {
+                  defaultValue:
+                    '预热配置已持久化至服务端 SQLite 数据库。服务端后台常驻守护协程自动按设定的提前量执行预热，彻底脱离浏览器生命周期，退出标签页或电脑关机均不受影响。',
+                })
+              )}
             </p>
           </div>
         </div>

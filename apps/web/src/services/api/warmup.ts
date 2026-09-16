@@ -18,10 +18,10 @@ export interface ServerWarmupSchedule {
   prompt: string;
   maxTokens: number;
   mode: AccountWarmupMode;
-  targetResetTime: string;
-  leadHours: number;
-  intervalMinutes: number;
-  inferredDelaySeconds: number;
+  targetResetTime?: string;
+  leadHours?: number;
+  intervalMinutes?: number;
+  inferredDelaySeconds?: number;
   enabled: boolean;
   nextRunAtMs: number;
   lastRunAtMs?: number;

@@ -5,8 +5,6 @@
  */
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
-import { useNotificationStore } from '@/stores';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
 import type { AccountRow } from '../model/accountRows';
 import {
@@ -21,7 +19,6 @@ import {
   type AccountWarmupRecord,
   type InferredWarmupTimeResult,
   type WarmupExecutionResult,
-  type WarmupTriggerSource,
 } from '../model/accountWarmup';
 
 /** 凭据预热运行时状态 */
@@ -62,17 +59,12 @@ export interface UseAccountWarmupSchedulerResult {
   isWarmupRunning: (rowKey: string) => boolean;
 }
 
-/** 调度器轮询间隔 (5秒) */
-const SCHEDULER_TICK_INTERVAL_MS = 5000;
-
 export function useAccountWarmupScheduler({
   rows,
   refreshAccountQuota,
   quotaDisplayWindowsByRowKey,
   getQuotaWindows,
 }: UseAccountWarmupSchedulerProps): UseAccountWarmupSchedulerResult {
-  const { t } = useTranslation();
-  const showNotification = useNotificationStore((state) => state.showNotification);
 
   // 凭据预热运行时状态缓存映射表 (key: selectionKey)
   const [runtimeStates, setRuntimeStates] = useState<Record<string, AccountWarmupRuntimeState>>({});

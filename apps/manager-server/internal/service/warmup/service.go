@@ -76,8 +76,8 @@ func (s *Service) ExecuteWarmup(ctx context.Context, sched *model.AccountWarmupS
 	if setup, ok, err := s.store.LoadSetup(ctx); err == nil && ok && strings.TrimSpace(setup.CPAUpstreamURL) != "" {
 		cpaBase = strings.TrimRight(strings.TrimSpace(setup.CPAUpstreamURL), "/")
 		mgmtKey = setup.ManagementKey
-	} else if cfg, cfgOk, cfgErr := s.store.LoadManagerConfig(ctx); cfgErr == nil && cfgOk && strings.TrimSpace(cfg.CPAConnection.BaseURL) != "" {
-		cpaBase = strings.TrimRight(strings.TrimSpace(cfg.CPAConnection.BaseURL), "/")
+	} else if cfg, cfgOk, cfgErr := s.store.LoadManagerConfig(ctx); cfgErr == nil && cfgOk && strings.TrimSpace(cfg.CPAConnection.CPABaseURL) != "" {
+		cpaBase = strings.TrimRight(strings.TrimSpace(cfg.CPAConnection.CPABaseURL), "/")
 		mgmtKey = cfg.CPAConnection.ManagementKey
 	}
 
