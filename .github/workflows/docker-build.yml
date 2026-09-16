@@ -48,6 +48,7 @@ on:
       - 'Dockerfile.manager-server'
       - '.github/workflows/docker-build.yml'
       - 'apps/web/**'
+      - 'apps/manager-server/**'
 
 # 权限控制：拉取代码与写入 GitHub Packages (GHCR)
 permissions:
