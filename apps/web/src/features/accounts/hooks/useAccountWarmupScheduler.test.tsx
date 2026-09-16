@@ -276,21 +276,15 @@ const createMemoryStorage = () => {
     expect(state.config.enabled).toBe(true);
   });
 
-  it('triggers scheduled warmup on timer tick and prevents infinite past-time loops', async () => {
+  it('updates warmup config and maintains scheduled status for server orchestration', async () => {
     const row = makeMockRow({ selectionKey: 'timer-acc' });
-    vi.spyOn(accountWarmupModel, 'executeWarmupInference').mockResolvedValue({
-      success: true,
-      statusCode: 200,
-      durationMs: 100,
-      responseSnippet: 'scheduled pong',
-    });
 
     await mount({
       rows: [row],
       refreshAccountQuota,
     });
 
-    // 启用基于重置时间的预热，设置下次时间为当前时刻之前（触发执行）
+    // 启用基于重置时间的预热配置
     await act(async () => {
       latest!.updateWarmupConfig(row, {
         model: 'gpt-5-codex',
@@ -304,12 +298,9 @@ const createMemoryStorage = () => {
       await Promise.resolve();
     });
 
-    // 快进 5 秒调度器时钟
-    await act(async () => {
-      vi.advanceTimersByTime(5000);
-      await Promise.resolve();
-    });
-
     expect(latest!.isWarmupScheduled('timer-acc')).toBe(true);
+    const state = latest!.getWarmupState(row);
+    expect(state.config.enabled).toBe(true);
+    expect(state.config.model).toBe('gpt-5-codex');
   });
 });

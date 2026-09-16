@@ -27,11 +27,12 @@ import {
 } from '@/components/ui/icons';
 import type { AuthFilesApiRequestScope } from '@/services/api';
 import { apiKeysApi } from '@/services/api/apiKeys';
+import { warmupApi, type ServerWarmupSchedule, type ServerWarmupLog } from '@/services/api/warmup';
 import { useAuthStore } from '@/stores/useAuthStore';
 import { useModelsStore } from '@/stores/useModelsStore';
 import { formatQuotaResetTime } from '@/utils/quota/formatters';
 import type { AccountQuotaDisplayWindow } from '../model/accountQuotaDisplayWindows';
-import type { AccountRow } from '../model/accountRows';
+import { extractPrefixFromRow, type AccountRow } from '../model/accountRows';
 import {
   DEFAULT_INFERRED_DELAY_SECONDS,
   DEFAULT_INTERVAL_MINUTES,
@@ -159,6 +160,12 @@ export function AccountWarmupModal({
   const [targetLeadHours, setTargetLeadHours] = useState(DEFAULT_TARGET_LEAD_HOURS);
   const [enabled, setEnabled] = useState(false);
 
+  // 服务端脱机预热调度与日志状态
+  const [serverSchedule, setServerSchedule] = useState<ServerWarmupSchedule | null>(null);
+  const [serverLogs, setServerLogs] = useState<ServerWarmupLog[]>([]);
+  const [serverLoading, setServerLoading] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+
   // 保持对动态配置与上下文引用的稳定指向，避免默认空对象每次重新创建导致无限循环重渲染
   const globalExcludedRef = useRef(globalExcluded);
   globalExcludedRef.current = globalExcluded;
@@ -268,24 +275,64 @@ export function AccountWarmupModal({
     }
   }, [open, row, gatewayModels.length, dynamicModels.length, loadDynamicModels]);
 
-  // 初始化与同步状态
+  // 初始化与同步状态（优先从服务端 SQLite 读取真实脱机调度配置与执行明细）
   const rowKey = row?.selectionKey;
   useEffect(() => {
     if (!open || !row) return;
 
-    // 获取该凭据已有预热状态
-    const state = scheduler.getWarmupState(row);
-    setModel(state.config.model);
-    setPrompt(state.config.prompt || loadWarmupPrompt());
-    setMaxTokens(state.config.maxTokens || DEFAULT_WARMUP_MAX_TOKENS);
-    setMode(state.config.mode || 'inferred');
-    setInferredDelaySeconds(state.config.inferredDelaySeconds ?? DEFAULT_INFERRED_DELAY_SECONDS);
-    setIntervalMinutes(state.config.intervalMinutes || DEFAULT_INTERVAL_MINUTES);
-    setTargetResetTime(state.config.targetResetTime || DEFAULT_TARGET_RESET_TIME);
-    setTargetLeadHours(state.config.targetLeadHours ?? DEFAULT_TARGET_LEAD_HOURS);
-    setEnabled(Boolean(state.config.enabled));
+    // 1. 本地存储快速反显，避免界面闪烁
+    const localState = scheduler.getWarmupState(row);
+    setModel(localState.config.model);
+    setPrompt(localState.config.prompt || loadWarmupPrompt());
+    setMaxTokens(localState.config.maxTokens || DEFAULT_WARMUP_MAX_TOKENS);
+    setMode(localState.config.mode || 'inferred');
+    setInferredDelaySeconds(localState.config.inferredDelaySeconds ?? DEFAULT_INFERRED_DELAY_SECONDS);
+    setIntervalMinutes(localState.config.intervalMinutes || DEFAULT_INTERVAL_MINUTES);
+    setTargetResetTime(localState.config.targetResetTime || DEFAULT_TARGET_RESET_TIME);
+    setTargetLeadHours(localState.config.targetLeadHours ?? DEFAULT_TARGET_LEAD_HOURS);
+    setEnabled(Boolean(localState.config.enabled));
     setLocalLastResult(null);
     setRefreshedInferredResult(null);
+
+    // 2. 异步请求服务端持久化配置与最近日志
+    let cancelled = false;
+    setServerLoading(true);
+    (async () => {
+      try {
+        const [sched, logs] = await Promise.all([
+          warmupApi.getSchedule(row.selectionKey, requestScopeRef.current),
+          warmupApi.listLogs(row.selectionKey, 10, requestScopeRef.current),
+        ]);
+        if (cancelled) return;
+        if (sched) {
+          setServerSchedule(sched);
+          if (sched.model) setModel(sched.model);
+          if (sched.prompt) setPrompt(sched.prompt);
+          if (sched.maxTokens) setMaxTokens(sched.maxTokens);
+          if (sched.mode) setMode(sched.mode);
+          if (sched.targetResetTime) setTargetResetTime(sched.targetResetTime);
+          if (sched.leadHours !== undefined && sched.leadHours >= 0) {
+            setTargetLeadHours(sched.leadHours);
+          }
+          if (sched.intervalMinutes) setIntervalMinutes(sched.intervalMinutes);
+          if (sched.inferredDelaySeconds !== undefined && sched.inferredDelaySeconds >= 0) {
+            setInferredDelaySeconds(sched.inferredDelaySeconds);
+          }
+          setEnabled(Boolean(sched.enabled));
+        }
+        if (Array.isArray(logs)) {
+          setServerLogs(logs);
+        }
+      } catch (err) {
+        console.warn('Failed to load server warmup config:', err);
+      } finally {
+        if (!cancelled) setServerLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [open, rowKey, scheduler]);
 
   // 候选模型提取源优先基于全局网关模型库（33个注册模型）
@@ -365,13 +412,23 @@ export function AccountWarmupModal({
     targetLeadHours,
   ]);
 
-  // 立即预热点击事件
+  // 立即预热点击事件 (完全走 CPA 网关标准链路并刷新额度)
   const handleRunImmediateWarmup = useCallback(async () => {
     if (!row || isWarmingUp) return;
     setIsWarmingUp(true);
     try {
       const res = await scheduler.runImmediateWarmup(row, activeConfig);
       setLocalLastResult(res);
+
+      // 执行后拉取最新服务端执行日志
+      try {
+        const freshLogs = await warmupApi.listLogs(row.selectionKey, 10, requestScopeRef.current);
+        if (Array.isArray(freshLogs)) {
+          setServerLogs(freshLogs);
+        }
+      } catch {
+        // 忽略日志拉取轻微失败
+      }
     } finally {
       setIsWarmingUp(false);
     }
@@ -389,12 +446,41 @@ export function AccountWarmupModal({
     }
   }, [row, isRefreshingInference, scheduler, inferredDelaySeconds]);
 
-  // 保存调度配置
-  const handleSaveConfig = useCallback(() => {
-    if (!row) return;
-    scheduler.updateWarmupConfig(row, activeConfig);
-    onClose();
-  }, [row, scheduler, activeConfig, onClose]);
+  // 保存预热调度配置至服务端 SQLite
+  const handleSaveConfig = useCallback(async () => {
+    if (!row || isSaving) return;
+    setIsSaving(true);
+    try {
+      const cleanPrefix = extractPrefixFromRow(row) || '';
+      const payload: ServerWarmupSchedule = {
+        selectionKey: row.selectionKey,
+        accountKey: row.account || row.accountLabel || row.selectionKey,
+        provider: row.provider,
+        prefix: cleanPrefix,
+        model: activeConfig.model,
+        prompt: activeConfig.prompt,
+        maxTokens: activeConfig.maxTokens,
+        mode: activeConfig.mode,
+        targetResetTime: activeConfig.targetResetTime,
+        leadHours: activeConfig.targetLeadHours,
+        intervalMinutes: activeConfig.intervalMinutes,
+        inferredDelaySeconds: activeConfig.inferredDelaySeconds,
+        enabled: activeConfig.enabled,
+        nextRunAtMs: 0, // 服务端根据配置自动计算精确排期
+      };
+      const saved = await warmupApi.saveSchedule(payload, requestScopeRef.current);
+      setServerSchedule(saved);
+      scheduler.updateWarmupConfig(row, activeConfig);
+      onClose();
+    } catch (err) {
+      console.error('Failed to save warmup config to server:', err);
+      // 降级保存本地并关闭
+      scheduler.updateWarmupConfig(row, activeConfig);
+      onClose();
+    } finally {
+      setIsSaving(false);
+    }
+  }, [row, isSaving, activeConfig, scheduler, onClose]);
 
   if (!row) return null;
 
@@ -439,7 +525,7 @@ export function AccountWarmupModal({
               <IconFlame size={14} />
               {t('accounts.warmup_now_button')}
             </Button>
-            <Button variant="primary" size="sm" onClick={handleSaveConfig}>
+            <Button variant="primary" size="sm" onClick={handleSaveConfig} loading={isSaving}>
               {t('common.save')}
             </Button>
           </div>
@@ -447,6 +533,20 @@ export function AccountWarmupModal({
       }
     >
       <div className={styles.warmupContainer}>
+        {/* 服务端脱机守护提示横幅 */}
+        <div className={styles.serverGuardianBanner}>
+          <span style={{ fontSize: 18 }}>🛡️</span>
+          <div>
+            <strong>{t('accounts.warmup_server_guardian_title', { defaultValue: '服务端 7×24H 脱机常驻守护已激活' })}</strong>
+            <p>
+              {t('accounts.warmup_server_guardian_desc', {
+                defaultValue:
+                  '预热配置已持久化至服务端 SQLite 数据库。服务端后台常驻守护协程自动按设定的提前量执行预热，彻底脱离浏览器生命周期，退出标签页或电脑关机均不受影响。',
+              })}
+            </p>
+          </div>
+        </div>
+
         {/* 凭据概要信息行 */}
         <div className={styles.headerInfo}>
           <span className={styles.providerBadge}>{row.provider}</span>
@@ -870,6 +970,42 @@ export function AccountWarmupModal({
             </div>
           ) : null}
         </div>
+
+        {/* Section 4: 服务端脱机执行历史日志 (最近 10 次记录) */}
+        {serverLogs.length > 0 ? (
+          <div className={styles.section}>
+            <div className={styles.sectionTitle}>
+              <span>{t('accounts.warmup_server_logs_title', { defaultValue: '服务端脱机预热历史记录' })}</span>
+              <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                {t('accounts.warmup_server_logs_count', { count: serverLogs.length, defaultValue: `最近 ${serverLogs.length} 次` })}
+              </span>
+            </div>
+
+            <div className={styles.serverLogsContainer}>
+              {serverLogs.map((log) => (
+                <div key={log.id} className={styles.serverLogItem}>
+                  <span
+                    className={log.status === 'success' ? styles.logStatusSuccess : styles.logStatusFailed}
+                  >
+                    {log.status === 'success' ? '✓ OK' : '✕ FAIL'}
+                  </span>
+                  <span style={{ color: 'var(--text-secondary)', minWidth: 120 }}>
+                    {formatTimestamp(log.createdAtMs)}
+                  </span>
+                  <span style={{ fontFamily: 'monospace', color: 'var(--primary-color)' }}>
+                    {log.model}
+                  </span>
+                  <span style={{ color: 'var(--text-secondary)' }}>
+                    {log.latencyMs}ms
+                  </span>
+                  <span style={{ marginLeft: 'auto', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
+                    {log.responseSnippet || log.errorMessage || '-'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
       </div>
     </Modal>
   );

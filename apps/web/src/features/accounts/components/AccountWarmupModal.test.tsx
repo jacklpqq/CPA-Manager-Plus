@@ -108,6 +108,17 @@ vi.mock('@/services/api/authFiles', () => ({
   },
 }));
 
+vi.mock('@/services/api/warmup', () => ({
+  warmupApi: {
+    getSchedule: vi.fn().mockResolvedValue(null),
+    listSchedules: vi.fn().mockResolvedValue([]),
+    saveSchedule: vi.fn().mockImplementation((sched) => Promise.resolve(sched)),
+    deleteSchedule: vi.fn().mockResolvedValue(undefined),
+    runImmediate: vi.fn().mockResolvedValue({ success: true, statusCode: 200, latencyMs: 100, responseSnippet: 'pong' }),
+    listLogs: vi.fn().mockResolvedValue([]),
+  },
+}));
+
 /** 构造测试凭据行数据 */
 const makeMockRow = (overrides: Partial<AccountRow> = {}): AccountRow => ({
   key: 'row-1',

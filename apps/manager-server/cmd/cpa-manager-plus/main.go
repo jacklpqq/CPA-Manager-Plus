@@ -249,6 +249,8 @@ func runServer() {
 		db.StartDerivedMaintenance(ctx)
 		collectorWorker.Start(ctx)
 		worker.NewLegacyQuotaSnapshotMigrationWorker(db).Start(ctx)
+		warmupWorker := worker.NewWarmupWorker(serverApp.AppContext().WarmupService, serverApp.AppContext().WarmupRepo)
+		warmupWorker.Start(ctx)
 	}
 
 	usageCacheAccountingMigrationWorker := worker.NewUsageCacheAccountingMigrationWorker(db, func() {

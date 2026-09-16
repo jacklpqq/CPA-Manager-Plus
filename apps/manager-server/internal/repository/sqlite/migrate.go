@@ -927,6 +927,53 @@ func Migrate(db *sql.DB) error {
 			plan_type text,
 			created_at_ms integer not null
 		)`,
+		// 凭据脱机预热调度配置表：记录各凭据的预热触发模式、期望重置时间、提前量与下次执行时间戳
+		`create table if not exists account_warmup_schedules (
+			id integer primary key autoincrement,
+			selection_key text not null unique,
+			account_key text not null,
+			provider text not null,
+			prefix text not null default '',
+			model text not null,
+			prompt text not null default 'ping',
+			max_tokens integer not null default 16,
+			mode text not null default 'target_reset',
+			target_reset_time text not null default '10:00',
+			lead_hours integer not null default 5,
+			interval_minutes integer not null default 60,
+			inferred_delay_seconds integer not null default 10,
+			enabled integer not null default 1,
+			next_run_at_ms integer not null default 0,
+			last_run_at_ms integer,
+			last_status text,
+			last_latency_ms integer,
+			last_response text,
+			last_error text,
+			created_at_ms integer not null,
+			updated_at_ms integer not null
+		)`,
+		// 预热待调度查询索引：加速后台 Worker 轮询 enabled=1 AND next_run_at_ms <= ?
+		`create index if not exists idx_account_warmup_due on account_warmup_schedules(enabled, next_run_at_ms)`,
+		`create index if not exists idx_account_warmup_provider on account_warmup_schedules(provider)`,
+		// 凭据预热执行日志表：记录每次服务端自主发起或手动发起的推理明细
+		`create table if not exists account_warmup_logs (
+			id integer primary key autoincrement,
+			schedule_id integer,
+			selection_key text not null,
+			account_key text not null,
+			provider text not null,
+			model text not null,
+			trigger_source text not null,
+			status text not null,
+			status_code integer not null,
+			latency_ms integer not null,
+			response_snippet text,
+			error_message text,
+			created_at_ms integer not null,
+			foreign key(schedule_id) references account_warmup_schedules(id) on delete set null
+		)`,
+		// 预热日志凭据倒序查询索引
+		`create index if not exists idx_account_warmup_logs_key on account_warmup_logs(selection_key, created_at_ms desc)`,
 	}
 	for _, statement := range statements {
 		if _, err := db.Exec(statement); err != nil {

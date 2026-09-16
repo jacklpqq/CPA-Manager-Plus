@@ -397,7 +397,9 @@ export function useAccountWarmupScheduler({
   );
 
   /**
-   * 前端调度器定时检查并在到达时间时自动触发预热
+   * 凭据状态水合与轻量同步
+   * 注意：定时预热调度已彻底迁移至 Manager Server (Go 后端常驻后台协程 WarmupWorker)
+   * 前端不再运行 setInterval 抢占式轮询，避免浏览器与服务端产生并发竞争与双重扣费
    */
   useEffect(() => {
     // 挂载或 rows 变更时，自动水合所有已保存定时预热配置的凭据状态
@@ -420,139 +422,7 @@ export function useAccountWarmupScheduler({
         }
       }
     }
-
-    const timer = setInterval(() => {
-      const now = Date.now();
-      const rowsSnapshot = rowsRef.current;
-
-      for (const row of rowsSnapshot) {
-        const key = row.selectionKey;
-        let itemState = runtimeStatesRef.current[key];
-        if (!itemState) {
-          itemState = getWarmupState(row);
-        }
-        if (!itemState || !itemState.config.enabled || itemState.isRunning) {
-          continue;
-        }
-
-        const nextAt = itemState.nextWarmupAtMs;
-        // 到达或超过指定预热时间
-        if (typeof nextAt === 'number' && nextAt > 0 && now >= nextAt) {
-          // 防死循环保护：若推断/目标重置模式下最近一次记录时间戳晚于或等于该预热时间点，则跳过
-          if (
-            (itemState.config.mode === 'inferred' || itemState.config.mode === 'target_reset') &&
-            itemState.lastRecord &&
-            itemState.lastRecord.timestamp >= nextAt
-          ) {
-            continue;
-          }
-
-          // 标记开始预热
-          setRuntimeStates((prev) => {
-            const updated = {
-              ...prev,
-              [key]: {
-                ...itemState,
-                isRunning: true,
-              },
-            };
-            runtimeStatesRef.current = updated;
-            return updated;
-          });
-
-          // 异步触发预热操作
-          void (async () => {
-            try {
-              const res = await executeWarmupInference(row, itemState.config);
-              const triggerMode: WarmupTriggerSource = itemState.config.mode;
-              const record: AccountWarmupRecord = {
-                timestamp: Date.now(),
-                statusCode: res.statusCode,
-                durationMs: res.durationMs,
-                responseSnippet: res.responseSnippet,
-                success: res.success,
-                errorMessage: res.errorMessage,
-                model: itemState.config.model,
-                triggerSource: triggerMode,
-              };
-              saveWarmupRecord(key, record);
-
-              // 自动刷新凭据额度
-              try {
-                await refreshAccountQuotaRef.current(row);
-              } catch {
-                // 忽略刷新异常
-              }
-
-              // 计算下一次预热时间
-              let nextWarmupAtMs: number | null = null;
-              if (itemState.config.mode === 'inferred') {
-                const freshRow = rowsRef.current.find((r) => r.selectionKey === key) || row;
-                const windows = resolveQuotaWindows(freshRow);
-                const inferred = inferNextWarmupTime(
-                  freshRow,
-                  itemState.config.inferredDelaySeconds,
-                  windows
-                );
-                // 仅当推断时间属于未来时设定下一次执行，避免过去时间 5 秒死循环
-                nextWarmupAtMs =
-                  inferred.nextWarmupAtMs && inferred.nextWarmupAtMs > Date.now()
-                    ? inferred.nextWarmupAtMs
-                    : null;
-              } else if (itemState.config.mode === 'target_reset') {
-                // 目标重置时间模式：重新计算下一次排期（以当前时间之后为基准，自动排到明天的同一预热时刻）
-                const targetRes = calculateTargetResetWarmupTime(
-                  itemState.config.targetResetTime,
-                  itemState.config.targetLeadHours,
-                  Date.now() + 1000
-                );
-                nextWarmupAtMs = targetRes.nextWarmupAtMs;
-              } else {
-                nextWarmupAtMs = Date.now() + itemState.config.intervalMinutes * 60 * 1000;
-              }
-
-              setRuntimeStates((prev) => {
-                const updated = {
-                  ...prev,
-                  [key]: {
-                    ...itemState,
-                    lastRecord: record,
-                    nextWarmupAtMs,
-                    isRunning: false,
-                  },
-                };
-                runtimeStatesRef.current = updated;
-                return updated;
-              });
-
-              const rowName = row.accountLabel || row.fileName;
-              showNotification(
-                t('accounts.warmup_scheduled_executed', {
-                  name: rowName,
-                  status: res.statusCode,
-                }),
-                res.success ? 'info' : 'warning'
-              );
-            } catch {
-              setRuntimeStates((prev) => {
-                const updated = {
-                  ...prev,
-                  [key]: {
-                    ...itemState,
-                    isRunning: false,
-                  },
-                };
-                runtimeStatesRef.current = updated;
-                return updated;
-              });
-            }
-          })();
-        }
-      }
-    }, SCHEDULER_TICK_INTERVAL_MS);
-
-    return () => clearInterval(timer);
-  }, [getWarmupState, resolveQuotaWindows, showNotification, t]);
+  }, [getWarmupState]);
 
   return {
     getWarmupState,

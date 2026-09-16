@@ -29,6 +29,8 @@ import (
 	setupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/setup"
 	updatechecksvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/updatecheck"
 	usagesvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/usage"
+	warmuprepo "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/repository/warmup"
+	warmupsvc "github.com/seakee/cpa-manager-plus/apps/manager-server/internal/service/warmup"
 	"github.com/seakee/cpa-manager-plus/apps/manager-server/internal/store"
 )
 
@@ -66,6 +68,8 @@ type Context struct {
 	AuthFileMutationCoordinator    *cpaauthfiles.MutationCoordinator
 	ProxyService                   *proxysvc.Service
 	PanelService                   *panelsvc.Service
+	WarmupRepo                     warmuprepo.Repository
+	WarmupService                  *warmupsvc.Service
 	AutomationRuntimeService       AutomationRuntimeService
 	DatabaseMaintenance            DatabaseMaintenanceStatusProvider
 }
@@ -187,6 +191,8 @@ func fromExisting(
 			st,
 		),
 		PanelService:             panelsvc.New(cfg.PanelPath, embeddedPanel),
+		WarmupRepo:               st.Warmup,
+		WarmupService:            warmupsvc.New(st.Warmup, st),
 		AutomationRuntimeService: runtimeService,
 	}
 }

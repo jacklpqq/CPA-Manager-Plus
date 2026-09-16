@@ -380,3 +380,62 @@
   color: var(--primary-color);
   margin-left: auto;
 }
+
+.serverGuardianBanner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: $radius-md;
+  background: color-mix(in srgb, var(--primary-color) 8%, var(--bg-primary));
+  border: 1px solid color-mix(in srgb, var(--primary-color) 24%, var(--border-color));
+  font-size: 12px;
+  line-height: 1.5;
+
+  strong {
+    color: var(--primary-color);
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-secondary);
+  }
+}
+
+.serverLogsContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  border-radius: $radius-sm;
+  background: var(--surface-subtle);
+  padding: 6px;
+}
+
+.serverLogItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: $radius-sm;
+  font-size: 11px;
+  background: color-mix(in srgb, var(--bg-primary) 80%, transparent);
+
+  &:hover {
+    background: color-mix(in srgb, var(--bg-primary) 95%, transparent);
+  }
+}
+
+.logStatusSuccess {
+  color: var(--data-green-base, #10b981);
+  font-weight: 600;
+}
+
+.logStatusFailed {
+  color: var(--data-red-base, #ef4444);
+  font-weight: 600;
+}
+
